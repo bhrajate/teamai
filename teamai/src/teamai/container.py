@@ -1,0 +1,131 @@
+"""组合根：装配全部依赖，供 main.py 与适配层复用。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from teamai.agent.models import ModelConfig, ModelRegistry
+from teamai.agent.runtime import AgentRuntime
+from teamai.application.budget import BudgetController
+from teamai.application.channel_service import ChannelService
+from teamai.application.intent import IntentClassifier
+from teamai.application.memory_service import MemoryService
+from teamai.application.orchestrator import TaskOrchestrator
+from teamai.application.router import MessageRouter
+from teamai.application.tags import TagResolver
+from teamai.config import settings
+from teamai.infrastructure.audit_log import AuditLogWriter
+from teamai.infrastructure.repositories.interface import (
+    AuditRepository,
+    BudgetRepository,
+    ChannelRepository,
+    MemoryRepository,
+    PolicyRepository,
+    TagRepository,
+    TaskRepository,
+)
+from teamai.infrastructure.repositories.sqlalchemy import (
+    SQLAuditRepository,
+    SQLBudgetRepository,
+    SQLChannelRepository,
+    SQLMemoryRepository,
+    SQLPolicyRepository,
+    SQLTagRepository,
+    SQLTaskRepository,
+)
+from teamai.infrastructure.vector import build_vector_store
+from teamai.tools.crm_tool import build_crm_tool
+from teamai.tools.github_tool import build_github_tool
+from teamai.tools.monitoring_tool import build_monitoring_tool
+from teamai.tools.registry import ToolRegistry
+
+
+@dataclass
+class Container:
+    task_repo: TaskRepository
+    memory_repo: MemoryRepository
+    tag_repo: TagRepository
+    policy_repo: PolicyRepository
+    budget_repo: BudgetRepository
+    channel_repo: ChannelRepository
+    audit_repo: AuditRepository
+
+    audit: AuditLogWriter
+    orchestrator: TaskOrchestrator
+    budget: BudgetController
+    memory: MemoryService
+    tags: TagResolver
+    channels: ChannelService
+    runtime: AgentRuntime
+    router: MessageRouter
+    tools: ToolRegistry
+
+
+def build_tools() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(build_github_tool())
+    registry.register(build_monitoring_tool())
+    registry.register(build_crm_tool())
+    return registry
+
+
+def build_container() -> Container:
+    """依赖装配。
+
+    MVP：使用单个共享 AsyncSession 由组合根管理，仓库共享该 session。
+    接入 FastAPI 后应替换为 session-per-request 依赖注入。
+    """
+    from teamai.infrastructure.db import get_session_factory
+
+    factory = get_session_factory()
+    session = factory()
+
+    task_repo = SQLTaskRepository(session)
+    memory_repo = SQLMemoryRepository(session)
+    tag_repo = SQLTagRepository(session)
+    policy_repo = SQLPolicyRepository(session)
+    budget_repo = SQLBudgetRepository(session)
+    channel_repo = SQLChannelRepository(session)
+    audit_repo = SQLAuditRepository(session)
+
+    audit = AuditLogWriter(audit_repo)
+    orchestrator = TaskOrchestrator(task_repo, audit)
+    budget = BudgetController(budget_repo, audit)
+    memory = MemoryService(memory_repo, channel_repo, audit, vector_store=build_vector_store())
+    tags = TagResolver(tag_repo, audit)
+    channels = ChannelService(channel_repo, policy_repo)
+
+    tools = build_tools()
+    model_config = ModelConfig.from_settings(settings)
+    registry = ModelRegistry(model_config)
+    runtime = AgentRuntime(registry, tools, budget, audit, settings)
+    intent = IntentClassifier()
+    router = MessageRouter(
+        orchestrator=orchestrator,
+        intent=intent,
+        tags=tags,
+        memory=memory,
+        budget=budget,
+        runtime=runtime,
+        channels=channels,
+        policy_repo=policy_repo,
+    )
+
+    return Container(
+        task_repo=task_repo,
+        memory_repo=memory_repo,
+        tag_repo=tag_repo,
+        policy_repo=policy_repo,
+        budget_repo=budget_repo,
+        channel_repo=channel_repo,
+        audit_repo=audit_repo,
+        audit=audit,
+        orchestrator=orchestrator,
+        budget=budget,
+        memory=memory,
+        tags=tags,
+        channels=channels,
+        runtime=runtime,
+        router=router,
+        tools=tools,
+    )
