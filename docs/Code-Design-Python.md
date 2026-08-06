@@ -23,10 +23,10 @@ Status: Draft v1.0
 ## 2. 项目目录结构
 
 ```
-teamai/
 ├── pyproject.toml
 ├── .env.example
 ├── docker-compose.yml            # postgres + redis + qdrant
+├── docs/                         # PRD / 设计 / 实施文档
 ├── src/
 │   └── teamai/
 │       ├── main.py               # 入口：Slack app + Admin API + Scheduler
