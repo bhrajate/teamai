@@ -7,6 +7,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "slack-bolt>=1.21",
+    # slack_bolt.async_app.AsyncApp 依赖 aiohttp，但 slack-bolt 未声明它
+    # （既不在必需依赖也无对应 extra），不显式声明则 teamai.main 无法导入。
+    "aiohttp>=3.10",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "pydantic-ai>=2.0.0",
