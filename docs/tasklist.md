@@ -11,9 +11,9 @@
 - [ ]* 1.1 编写配置加载与幂等键的单元测试
 
 - [x] 2. 实现领域模型层
-   - 实现 domain/task.py：TaskStatus 枚举 + 合法迁移表 + Task dataclass（含 transition 校验）
-   - 实现 domain/channel.py、domain/memory.py、domain/tag.py
-   - 实现 domain/policy.py、domain/budget.py、domain/audit.py
+   - 实现 domain/models/task.py：TaskStatus 枚举 + 合法迁移表 + Task dataclass（含 transition 校验）
+   - 实现 domain/models/channel.py、domain/models/memory.py、domain/models/tag.py
+   - 实现 domain/models/policy.py、domain/models/budget.py、domain/models/audit.py
    - 参考 Code-Design-Python.md §4.1 与 Design-claude-tag.md §4 数据模型
 
 - [ ]* 2.1 编写 Task 状态机迁移的属性测试（任意非法迁移必抛异常，对应正确性属性"任务终态确定性"）
@@ -23,11 +23,11 @@
 
 - [x] 4. 实现基础设施层（DB/仓储/队列/向量/审计）
    - 实现 infrastructure/db.py（SQLAlchemy async engine/session）
-   - 实现 infrastructure/repositories.py：TaskRepository、MemoryRepository、TagRepository、PolicyRepository、BudgetRepository、AuditRepository 的 SQL 实现（接口见 domain/repositories.py §4.5）
+   - 实现 infrastructure/repositories/：TaskRepository、MemoryRepository、TagRepository、PolicyRepository、BudgetRepository、AuditRepository 的 SQL 实现，按聚合一文件（接口见 domain/repositories/ §4.5）
    - 实现 infrastructure/queue.py（RedisTaskQueue：长任务入队/消费/结果回写）
    - 实现 infrastructure/vector.py（Qdrant/Chroma 适配器：embedding 写入与语义检索）
    - 实现 infrastructure/scheduler.py（APScheduler：cron 定时任务创建与取消）
-   - 实现 domain/audit_writer.py（仅追加审计写入，领域服务）
+   - 实现 domain/services/audit_writer.py（仅追加审计写入，领域服务）
    - 参考 Code-Design-Python.md §4.5、§6
 
 - [ ]* 4.1 编写仓储 CRUD 与审计仅追加的集成测试（审计完整性对应正确性属性）
@@ -62,9 +62,9 @@
    - 实现 application/router.py：MessageRouter（事件分派：@提及走意图分类，普通消息走 observe）
    - 实现 application/intent.py：IntentClassifier（LLM 零样本分类 + 关键词规则兜底）
    - 实现 application/orchestrator.py：TaskOrchestrator（创建、阶段推进、WAITING_INPUT、取消、超时提醒与自动取消、长任务入队）
-   - 实现 application/tags.py：TagResolver（标签解析与激活）
+   - 实现 application/tag.py：TagResolver（标签解析与激活）
    - 实现 application/budget.py：BudgetController（配额核算、上限触发 PAUSED 与通知）
-   - 实现 application/memory_service.py：MemoryService（频道记忆存储/检索、偏好管理、跨频道授权检查）
+   - 实现 application/memory.py：MemoryService（频道记忆存储/检索、偏好管理、跨频道授权检查）
    - 参考 Design-claude-tag.md §3.2-§3.11
 
 - [ ]* 8.1 编写编排层集成测试（Slack 模拟事件 → 路由 → 编排 → 回复全链路）
@@ -72,8 +72,8 @@
 - [x] 9. 检查点 - 核心编排链路测试通过
 
 - [x] 10. 实现 Slack 适配层与 Admin API
-   - 实现 adapters/slack_app.py：slack-bolt AsyncApp 装配（app_mention、message 事件、Socket Mode）
-   - 实现 adapters/admin_api.py：FastAPI 路由（频道实例管理、记忆管理、预算配置、权限策略、审计查询、标签管理）
+   - 实现 adapters/slack.py：slack-bolt AsyncApp 装配（app_mention、message 事件、Socket Mode）
+   - 实现 adapters/admin/：FastAPI 路由，按资源分模块（记忆管理、预算配置、权限策略、审计查询、任务查询、标签管理）
    - 实现 app/backend/main.py：装配所有依赖，启动 Admin API + Slack 事件入口（Scheduler 在 worker 进程）
    - 参考 Code-Design-Python.md §4.6 与 Design-claude-tag.md §3.1、§3.13
 
