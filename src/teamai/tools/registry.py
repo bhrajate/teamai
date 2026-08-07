@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from teamai.domain.policy import PermissionPolicy
+from teamai.domain.models import PermissionPolicy
 from teamai.tools.base import BaseTool, ToolError, ToolResult
 
 

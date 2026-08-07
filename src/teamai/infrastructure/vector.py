@@ -6,7 +6,7 @@ import uuid
 from typing import Protocol
 
 from teamai.config import settings
-from teamai.domain.memory import MemoryEntry
+from teamai.domain.models import MemoryEntry
 
 
 class VectorStore(Protocol):

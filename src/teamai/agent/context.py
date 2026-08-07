@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from teamai.domain.channel import ChannelInstance
-from teamai.domain.memory import MemoryEntry
-from teamai.domain.policy import PermissionPolicy
-from teamai.domain.tag import TagTemplate
+from teamai.domain.models import ChannelInstance, MemoryEntry, PermissionPolicy, TagTemplate
 
 
 @dataclass

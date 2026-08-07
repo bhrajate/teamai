@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
-from teamai.domain.audit import AuditLog
+from teamai.domain.models import AuditLog, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
 from teamai.domain.repositories import AuditRepository, TaskRepository
-from teamai.domain.task import Task, TaskStatus
 
 
 class FakeTaskQueue(TaskQueue):

@@ -7,10 +7,16 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from teamai.domain.audit import AuditAction, AuditResult
-from teamai.domain.budget import BudgetPeriod, BudgetScope, BudgetState
-from teamai.domain.memory import MemoryType, Visibility
-from teamai.domain.task import TaskStatus
+from teamai.domain.models import (
+    AuditAction,
+    AuditResult,
+    BudgetPeriod,
+    BudgetScope,
+    BudgetState,
+    MemoryType,
+    TaskStatus,
+    Visibility,
+)
 from teamai.infrastructure.db import Base
 
 

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from teamai.domain.channel import ChannelInstance
-from teamai.domain.policy import PermissionPolicy
+from teamai.domain.models import ChannelInstance, PermissionPolicy
 
 
 def build_system_prompt(

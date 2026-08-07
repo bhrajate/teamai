@@ -7,8 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from teamai.container import Container
-from teamai.domain.budget import BudgetPeriod, BudgetQuota, BudgetScope
-from teamai.domain.policy import AmbientRule, PermissionPolicy
+from teamai.domain.models import AmbientRule, BudgetPeriod, BudgetQuota, BudgetScope, PermissionPolicy
 from teamai.util.events import gen_id
 
 

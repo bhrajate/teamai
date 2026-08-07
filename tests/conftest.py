@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from teamai.application.orchestrator import TaskOrchestrator
-from teamai.domain.audit_writer import AuditLogWriter
+from teamai.domain.services import AuditLogWriter
 from tests.fakes import FakeAuditRepository, FakeTaskQueue, FakeTaskRepository
 
 

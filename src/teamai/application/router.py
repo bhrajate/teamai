@@ -13,8 +13,8 @@ from teamai.application.intent import IntentClassifier
 from teamai.application.memory_service import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.tags import TagResolver
+from teamai.domain.models import TaskStatus
 from teamai.domain.repositories import PolicyRepository
-from teamai.domain.task import TaskStatus
 
 
 @dataclass
@@ -117,7 +117,7 @@ class MessageRouter:
         return RoutingDecision(handler="respond", message=f"任务执行失败：{result.error}")
 
     async def _run_agent(self, task, prompt: str, tag_name: str | None, instance):
-        from teamai.domain.task import Task
+        from teamai.domain.models import Task
 
         assert isinstance(task, Task)
         policy = await self._policy_repo.get_for_channel(task.channel_instance_id)

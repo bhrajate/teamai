@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from teamai.domain.channel import ChannelInstance
+from teamai.domain.models import ChannelInstance
 from teamai.domain.repositories import ChannelRepository, PolicyRepository
 from teamai.util.events import gen_id
 

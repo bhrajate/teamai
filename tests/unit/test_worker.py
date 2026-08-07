@@ -12,9 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from teamai.application.router import RoutingDecision
-from teamai.domain.channel import ChannelInstance
+from teamai.domain.models import ChannelInstance, Task, TaskStatus
 from teamai.domain.ports import QueuePayload
-from teamai.domain.task import Task, TaskStatus
 from teamai.worker import handle_payload, run_worker
 from tests.fakes import FakeTaskQueue, FakeTaskRepository
 

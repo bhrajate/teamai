@@ -10,7 +10,7 @@ import itertools
 
 import pytest
 
-from teamai.domain.task import _TRANSITIONS, InvalidTransition, Task, TaskStatus
+from teamai.domain.models.task import _TRANSITIONS, InvalidTransition, Task, TaskStatus
 
 TERMINAL = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
 

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from teamai.domain.audit import AuditAction
-from teamai.domain.audit_writer import AuditLogWriter
+from teamai.domain.models import AuditAction, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
 from teamai.domain.repositories import TaskRepository
-from teamai.domain.task import Task, TaskStatus
+from teamai.domain.services import AuditLogWriter
 from teamai.util.events import gen_id
 
 

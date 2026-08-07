@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from teamai.domain.audit import AuditAction
-from teamai.domain.audit_writer import AuditLogWriter
-from teamai.domain.memory import MemoryEntry, MemoryType, Preference
+from teamai.domain.models import AuditAction, MemoryEntry, MemoryType, Preference
 from teamai.domain.repositories import ChannelRepository, MemoryRepository
+from teamai.domain.services import AuditLogWriter
 from teamai.util.events import gen_id
 
 

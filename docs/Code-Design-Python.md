@@ -33,16 +33,26 @@ Status: Draft v1.0
 │       ├── container.py          # 组合根：装配全部依赖
 │       ├── config.py             # Settings (pydantic-settings)
 │       ├── domain/               # 领域模型与抽象契约（无外部依赖）
-│       │   ├── channel.py        # ChannelInstance
-│       │   ├── task.py           # Task + TaskStatus 状态机
-│       │   ├── memory.py         # MemoryEntry / Preference
-│       │   ├── tag.py            # TagTemplate
-│       │   ├── policy.py         # PermissionPolicy / AmbientRule
-│       │   ├── budget.py         # BudgetQuota
-│       │   ├── audit.py          # AuditLog
-│       │   ├── audit_writer.py   # AuditLogWriter（领域服务，application/agent 共用）
-│       │   ├── repositories.py   # 仓储抽象接口（依赖倒置）
-│       │   └── ports.py          # TaskQueue 等外部系统端口
+│       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
+│       │   │   ├── channel.py    # ChannelInstance
+│       │   │   ├── task.py       # Task + TaskStatus 状态机
+│       │   │   ├── memory.py     # MemoryEntry / Preference
+│       │   │   ├── tag.py        # TagTemplate
+│       │   │   ├── policy.py     # PermissionPolicy / AmbientRule
+│       │   │   ├── budget.py     # BudgetQuota
+│       │   │   └── audit.py      # AuditLog
+│       │   ├── repositories/     # 仓储抽象接口（依赖倒置，一聚合一文件）
+│       │   │   ├── task.py       # TaskRepository
+│       │   │   ├── memory.py     # MemoryRepository
+│       │   │   ├── tag.py        # TagRepository
+│       │   │   ├── policy.py     # PolicyRepository
+│       │   │   ├── budget.py     # BudgetRepository
+│       │   │   ├── channel.py    # ChannelRepository
+│       │   │   └── audit.py      # AuditRepository
+│       │   ├── ports/            # 外部系统端口
+│       │   │   └── queue.py      # TaskQueue / QueuePayload
+│       │   └── services/         # 领域服务
+│       │       └── audit_writer.py  # AuditLogWriter（application/agent 共用）
 │       ├── application/          # 用例层（编排逻辑）
 │       │   ├── router.py         # MessageRouter
 │       │   ├── intent.py         # IntentClassifier
@@ -92,7 +102,7 @@ main → adapters ─┬→ application → agent → tools
 
 依赖只允许向下，`util` 为叶子模块（零内部依赖），任何层可用。
 
-- `domain` 无外部依赖：领域模型 + 仓储接口（`repositories.py`）+ 外部端口（`ports.py`）+ 审计领域服务（`audit_writer.py`）
+- `domain` 无外部依赖，内部按类型分四个子包：领域模型（`models/`）+ 仓储接口（`repositories/`）+ 外部端口（`ports/`）+ 领域服务（`services/`）。各子包 `__init__.py` 汇总导出，跨层调用方写 `from teamai.domain.models import Task`；`domain` 内部互相引用走具体子模块（如 `teamai.domain.models.task`）以免绕回包级 `__init__`
 - `application` 依赖 domain / agent / tools，**不依赖 infrastructure**——持久化与队列均通过 domain 声明的抽象访问
 - `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
 - `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）
@@ -103,7 +113,7 @@ main → adapters ─┬→ application → agent → tools
 
 ## 4. 核心接口设计
 
-### 4.1 domain/task.py — 任务状态机
+### 4.1 domain/models/task.py — 任务状态机
 
 ```python
 from enum import Enum
@@ -244,7 +254,7 @@ class BaseTool(ABC):
         ...
 ```
 
-### 4.5 domain/repositories.py — 仓储接口（依赖倒置）
+### 4.5 domain/repositories/ — 仓储接口（依赖倒置）
 
 ```python
 class TaskRepository(ABC):

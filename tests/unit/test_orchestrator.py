@@ -8,8 +8,7 @@ from __future__ import annotations
 import pytest
 
 from teamai.application.orchestrator import TaskOrchestrator
-from teamai.domain.audit import AuditAction
-from teamai.domain.task import InvalidTransition, TaskStatus
+from teamai.domain.models import AuditAction, InvalidTransition, TaskStatus
 from tests.fakes import FakeAuditRepository, FakeTaskQueue, FakeTaskRepository
 
 

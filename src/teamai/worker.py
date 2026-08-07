@@ -17,8 +17,8 @@ import signal
 
 from teamai.app import init_database
 from teamai.container import Container, build_container
+from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload
-from teamai.domain.task import TaskStatus
 
 logger = logging.getLogger(__name__)
 

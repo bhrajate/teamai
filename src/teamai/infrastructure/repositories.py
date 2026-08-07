@@ -7,11 +7,18 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from teamai.domain.audit import AuditLog
-from teamai.domain.budget import BudgetQuota
-from teamai.domain.channel import ChannelInstance
-from teamai.domain.memory import MemoryEntry, Preference
-from teamai.domain.policy import AmbientRule, PermissionPolicy
+from teamai.domain.models import (
+    AmbientRule,
+    AuditLog,
+    BudgetQuota,
+    ChannelInstance,
+    MemoryEntry,
+    PermissionPolicy,
+    Preference,
+    TagTemplate,
+    Task,
+    TaskStatus,
+)
 from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
@@ -21,8 +28,6 @@ from teamai.domain.repositories import (
     TagRepository,
     TaskRepository,
 )
-from teamai.domain.tag import TagTemplate
-from teamai.domain.task import Task, TaskStatus
 from teamai.infrastructure.orm import (
     AuditLogModel,
     BudgetQuotaModel,

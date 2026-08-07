@@ -6,8 +6,8 @@ application 与 agent 两层都需要留痕，故放在 domain 层避免两者�
 
 from __future__ import annotations
 
-from teamai.domain.audit import AuditAction, AuditLog, AuditResult
-from teamai.domain.repositories import AuditRepository
+from teamai.domain.models.audit import AuditAction, AuditLog, AuditResult
+from teamai.domain.repositories.audit import AuditRepository
 from teamai.util.events import gen_id
 
 

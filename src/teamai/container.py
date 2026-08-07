@@ -14,7 +14,6 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.router import MessageRouter
 from teamai.application.tags import TagResolver
 from teamai.config import settings
-from teamai.domain.audit_writer import AuditLogWriter
 from teamai.domain.ports import TaskQueue
 from teamai.domain.repositories import (
     AuditRepository,
@@ -25,6 +24,7 @@ from teamai.domain.repositories import (
     TagRepository,
     TaskRepository,
 )
+from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.queue import RedisTaskQueue
 from teamai.infrastructure.repositories import (
     SQLAuditRepository,
