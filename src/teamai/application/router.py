@@ -6,14 +6,14 @@ from dataclasses import dataclass
 
 from teamai.agent.context import ContextBundle
 from teamai.agent.prompts import build_system_prompt
-from teamai.agent.runtime import AgentRuntime, StageStatus
+from teamai.agent.runtime import AgentRuntime, StageResult, StageStatus
 from teamai.application.budget import BudgetController
-from teamai.application.channel_service import ChannelService
+from teamai.application.channel import ChannelService
 from teamai.application.intent import IntentClassifier
-from teamai.application.memory_service import MemoryService
+from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
-from teamai.application.tags import TagResolver
-from teamai.domain.models import TaskStatus
+from teamai.application.tag import TagResolver
+from teamai.domain.models import ChannelInstance, Task, TaskStatus
 from teamai.domain.repositories import PolicyRepository
 
 
@@ -65,7 +65,13 @@ class MessageRouter:
 
         return await self._handle_task(instance, thread_ts, user_id, text)
 
-    async def _handle_task(self, instance, thread_ts: str, user_id: str, text: str):
+    async def _handle_task(
+        self,
+        instance: ChannelInstance,
+        thread_ts: str,
+        user_id: str,
+        text: str,
+    ) -> RoutingDecision:
         channel_instance_id = instance.id
         tag_name = None
         parts = text.split()
@@ -86,17 +92,17 @@ class MessageRouter:
             user_id,
             intent.kind,
             tag_name=tag_name,
-            model_level="full" if intent.kind in ("code_review", "bugfix", "data_analysis") else "light",
+            model_level=intent.model_level,
         )
         await self._orchestrator.transition(task, TaskStatus.RUNNING, user_id)
         return await self.execute_task(task, text, tag_name, instance, actor=user_id)
 
     async def execute_task(
         self,
-        task,
+        task: Task,
         prompt: str,
         tag_name: str | None,
-        instance,
+        instance: ChannelInstance,
         *,
         actor: str,
     ) -> RoutingDecision:
@@ -116,10 +122,13 @@ class MessageRouter:
         await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
         return RoutingDecision(handler="respond", message=f"任务执行失败：{result.error}")
 
-    async def _run_agent(self, task, prompt: str, tag_name: str | None, instance):
-        from teamai.domain.models import Task
-
-        assert isinstance(task, Task)
+    async def _run_agent(
+        self,
+        task: Task,
+        prompt: str,
+        tag_name: str | None,
+        instance: ChannelInstance,
+    ) -> StageResult:
         policy = await self._policy_repo.get_for_channel(task.channel_instance_id)
         tag = await self._tags.resolve(task.channel_instance_id, tag_name) if tag_name else None
 

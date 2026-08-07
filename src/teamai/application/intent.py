@@ -15,6 +15,15 @@ class Intent:
     def is_task(self) -> bool:
         return self.confidence >= 0.5
 
+    @property
+    def model_level(self) -> str:
+        """该意图所需的模型档位。
+
+        与 kind 的定义放在同一文件：新增 kind 时能一眼看到要不要进
+        _FULL_MODEL_KINDS，避免这份映射散到调用方（原先硬编在 router 里）。
+        """
+        return "full" if self.kind in _FULL_MODEL_KINDS else "light"
+
 
 _QUERY_KINDS = {"query", "chat"}
 _TASK_KEYWORDS = [
@@ -25,6 +34,9 @@ _TASK_KEYWORDS = [
     ("pr_operation", {"pr", "pull request", "提 pr", "合并"}),
     ("ticket", {"工单", "ticket", "case"}),
 ]
+
+# 需要高阶模型的意图：推理链长、改动有风险，light 档位不够用
+_FULL_MODEL_KINDS = {"code_review", "bugfix", "data_analysis"}
 
 
 class IntentClassifier:

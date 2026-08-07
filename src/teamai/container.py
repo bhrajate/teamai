@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from teamai.agent.models import ModelConfig, ModelRegistry
 from teamai.agent.runtime import AgentRuntime
 from teamai.application.budget import BudgetController
-from teamai.application.channel_service import ChannelService
+from teamai.application.channel import ChannelService
 from teamai.application.intent import IntentClassifier
-from teamai.application.memory_service import MemoryService
+from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.router import MessageRouter
-from teamai.application.tags import TagResolver
+from teamai.application.tag import TagResolver
 from teamai.config import settings
 from teamai.domain.ports import TaskQueue
 from teamai.domain.repositories import (

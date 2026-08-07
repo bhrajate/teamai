@@ -56,12 +56,13 @@ Status: Draft v1.0
 │       │   └── services/         # 领域服务
 │       │       └── audit_writer.py  # AuditLogWriter（application/agent 共用）
 │       ├── application/          # 用例层（编排逻辑）
-│       │   ├── router.py         # MessageRouter
-│       │   ├── intent.py         # IntentClassifier
+│       │   ├── router.py         # MessageRouter（唯一协调者，组合下列用例）
 │       │   ├── orchestrator.py   # TaskOrchestrator
-│       │   ├── memory_service.py # MemoryService
-│       │   ├── budget.py         # BudgetController
-│       │   └── tags.py           # TagResolver
+│       │   ├── intent.py         # IntentClassifier + Intent（含意图→模型档位）
+│       │   ├── channel.py        # ChannelService
+│       │   ├── memory.py         # MemoryService
+│       │   ├── tag.py            # TagResolver
+│       │   └── budget.py         # BudgetController
 │       ├── agent/                # Agent 执行层
 │       │   ├── runtime.py        # AgentRuntime（核心循环）
 │       │   ├── context.py        # ContextBundle 组装
@@ -122,6 +123,7 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 
 - `domain` 无外部依赖，内部按类型分四个子包：领域模型（`models/`）+ 仓储接口（`repositories/`）+ 外部端口（`ports/`）+ 领域服务（`services/`）。各子包 `__init__.py` 汇总导出，跨层调用方写 `from teamai.domain.models import Task`；`domain` 内部互相引用走具体子模块（如 `teamai.domain.models.task`）以免绕回包级 `__init__`
 - `application` 依赖 domain / agent / tools，**不依赖 infrastructure**——持久化与队列均通过 domain 声明的抽象访问
+- `application` 平铺不分子包：整层同质（六个用例服务 + 一个协调者 `router.py`），没有 domain 那样的类型轴可分，534 行也撑不起嵌套。文件名不带 `_service` 后缀（这一层全是 service，后缀是噪声）、用单数，聚合型的与下层同名：`domain/models/tag.py` ↔ `infrastructure/repositories/tag.py` ↔ `application/tag.py`
 - `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
 - `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）。内部布局镜像 domain：`orm/` 与 `repositories/` 都按聚合分模块，一个聚合的表、mapper 与仓储实现路径同名，改字段时三边位置可推测
 - `infrastructure/orm/__init__.py` **必须导入全部表模块**：SQLAlchemy 只在类定义被执行时才把表注册进 `Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表，漏一个 import 对应的表就会静默不创建。此约束由 `tests/unit/test_orm_registry.py` 静态校验
