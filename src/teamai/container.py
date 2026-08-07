@@ -31,6 +31,7 @@ from teamai.domain.repositories import (
 from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.dedup import build_event_deduplicator
 from teamai.infrastructure.queue import RedisTaskQueue
+from teamai.infrastructure.redis_client import RedisClientProvider
 from teamai.infrastructure.repositories import (
     SQLAuditRepository,
     SQLBudgetRepository,
@@ -58,6 +59,8 @@ class Container:
     audit_repo: AuditRepository
     queue: TaskQueue
     dedup: EventDeduplicator
+    # 唯一持有的具体基础设施类型，为的是退出时能关掉共享连接池
+    redis: RedisClientProvider
 
     audit: AuditLogWriter
     orchestrator: TaskOrchestrator
@@ -68,6 +71,14 @@ class Container:
     runtime: AgentRuntime
     router: MessageRouter
     tools: ToolRegistry
+
+    async def aclose(self) -> None:
+        """释放长期存活的外部连接。由进程入口在退出路径调用。
+
+        client 改为复用后连接不再随调用结束而关闭，必须显式收尾，
+        否则退出时留下未关闭的 socket 并打出警告。
+        """
+        await self.redis.aclose()
 
 
 def build_tools() -> ToolRegistry:
@@ -97,8 +108,10 @@ def build_container() -> Container:
     channel_repo = SQLChannelRepository(session)
     audit_repo = SQLAuditRepository(session)
 
-    queue = RedisTaskQueue()
-    dedup = build_event_deduplicator()
+    # queue 与 dedup 共用一个 client，全进程一个连接池
+    redis = RedisClientProvider()
+    queue = RedisTaskQueue(redis)
+    dedup = build_event_deduplicator(redis)
 
     audit = AuditLogWriter(audit_repo)
     orchestrator = TaskOrchestrator(task_repo, audit, queue)
@@ -133,6 +146,7 @@ def build_container() -> Container:
         audit_repo=audit_repo,
         queue=queue,
         dedup=dedup,
+        redis=redis,
         audit=audit,
         orchestrator=orchestrator,
         budget=budget,

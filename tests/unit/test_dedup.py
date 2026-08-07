@@ -85,11 +85,23 @@ class _FakeRedisClient:
         self.closed = True
 
 
-def _patch_redis(monkeypatch: pytest.MonkeyPatch, client: object) -> None:
-    """替掉 redis.asyncio.from_url，避免真连 Redis。"""
+def _patch_redis(monkeypatch: pytest.MonkeyPatch, client: object) -> dict:
+    """替掉 redis.asyncio.from_url，避免真连 Redis。
+
+    返回的 dict 记录 from_url 被调用次数与最后一次的关键字参数，
+    供断言「client 只建一次」与连接保活选项。
+    """
     import redis.asyncio as aioredis
 
-    monkeypatch.setattr(aioredis, "from_url", lambda *a, **kw: client)
+    created: dict = {"count": 0, "kwargs": {}}
+
+    def _factory(*a: object, **kw: object) -> object:
+        created["count"] += 1
+        created["kwargs"] = kw
+        return client
+
+    monkeypatch.setattr(aioredis, "from_url", _factory)
+    return created
 
 
 class TestRedisDeduplicator:
@@ -118,13 +130,21 @@ class TestRedisDeduplicator:
         dedup = RedisEventDeduplicator()
         assert await dedup.is_duplicate("Ev1") is True
 
-    async def test_用完即关连接(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_多次调用复用同一_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """不再每次调用都新建连接 —— 本条是这次性能改动的核心断言。"""
         from teamai.infrastructure.dedup import RedisEventDeduplicator
+        from teamai.infrastructure.redis_client import RedisClientProvider
 
         client = _FakeRedisClient(set_returns=True)
-        _patch_redis(monkeypatch, client)
-        await RedisEventDeduplicator().is_duplicate("Ev1")
-        assert client.closed is True
+        created = _patch_redis(monkeypatch, client)
+
+        dedup = RedisEventDeduplicator(RedisClientProvider())
+        for i in range(5):
+            await dedup.is_duplicate(f"Ev{i}")
+
+        assert created["count"] == 1, f"应只建一次 client，实际 {created['count']} 次"
+        assert len(client.calls) == 5
+        assert client.closed is False, "连接不应在每次调用后关闭，那样就白复用了"
 
     async def test_redis_不可用时降级而非放行(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Redis 挂了也不该把重投当新事件处理。"""

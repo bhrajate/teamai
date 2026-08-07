@@ -124,6 +124,11 @@ async def _main() -> None:
     finally:
         scheduler.shutdown()
         logger.info("Scheduler 已关闭")
+        # 共享 Redis 连接池是长期存活的，须显式关闭
+        try:
+            await container.aclose()
+        except Exception as exc:  # pragma: no cover - 退出路径尽力而为
+            logger.warning(f"释放容器资源异常: {exc}")
 
 
 def main() -> None:

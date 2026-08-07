@@ -94,6 +94,7 @@ Status: Draft v1.0
 │       │   │   ├── budget.py     # SQLBudgetRepository
 │       │   │   ├── channel.py    # SQLChannelRepository
 │       │   │   └── audit.py      # SQLAuditRepository（JSON 字段转换）
+│       │   ├── redis_client.py   # RedisClientProvider（进程内共享连接池）
 │       │   ├── queue.py          # RedisTaskQueue（TaskQueue 实现）
 │       │   ├── dedup.py          # RedisEventDeduplicator（SET NX EX，内存兜底）
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
@@ -136,7 +137,8 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 - `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
 - `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）。内部布局镜像 domain：`orm/` 与 `repositories/` 都按聚合分模块，一个聚合的表、mapper 与仓储实现路径同名，改字段时三边位置可推测
 - `infrastructure/orm/__init__.py` **必须导入全部表模块**：SQLAlchemy 只在类定义被执行时才把表注册进 `Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表，漏一个 import 对应的表就会静默不创建。此约束由 `tests/unit/test_orm_registry.py` 静态校验
-- `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）。同时持有进程内共享单例 `get_container()`：容器内含共享 AsyncSession 与 Redis 连接，重复装配会按调用次数放大连接数
+- `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）。同时持有进程内共享单例 `get_container()`：容器内含共享 AsyncSession 与 Redis 连接池，重复装配会按调用次数放大连接数
+- Redis 连接由 `infrastructure/redis_client.py` 的 `RedisClientProvider` 统一持有，`queue` 与 `dedup` 共用同一个，全进程一个连接池。**不做模块级单例**：redis-py 的连接绑定创建它的事件循环，跨循环使用会抛 `Event loop is closed`，而 pytest-asyncio 每个测试一个新循环。连接长期存活，故须由进程入口在退出路径调用 `container.aclose()`，否则留下 `ResourceWarning: unclosed transport`
 - `adapters` 最外层，接收已装配好的 Container。`admin/` 每个资源模块导出一个 `build_*_router(container)`，子路由自身不带前缀、完整路径写在模块内，`/api` 前缀由 `build_admin_router` 统一挂
 - `adapters/admin/__init__.py` **必须 include 全部资源路由**：漏一个该组路由静默不注册，请求时才 404。此约束由 `tests/unit/test_admin_routes.py` 校验（AST 静态检查 + 完整路由表断言）。注意路由表须从 `app.openapi()` 取 —— FastAPI 把 `include_router` 存成惰性对象，遍历 `app.routes` 只能看到 `/api/health`
 

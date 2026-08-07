@@ -73,6 +73,11 @@ def create_app() -> FastAPI:
                 # 等取消真正生效，否则 uvicorn 退出时会报 pending task
                 await asyncio.gather(socket_task, return_exceptions=True)
                 logger.info("Slack Socket Mode 已断开")
+            # 共享 Redis 连接池是长期存活的，须显式关闭
+            try:
+                await container.aclose()
+            except Exception as exc:  # pragma: no cover - 退出路径尽力而为
+                logger.warning(f"释放容器资源异常: {exc}")
 
     app = FastAPI(title="TeamAI Admin API", version="0.1.0", lifespan=lifespan)
     app.include_router(build_admin_router(container))

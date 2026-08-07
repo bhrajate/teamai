@@ -7,30 +7,31 @@ from typing import Any
 
 from teamai.config import settings
 from teamai.domain.ports import QueuePayload, TaskQueue
+from teamai.infrastructure.redis_client import RedisClientProvider
 
 
 class RedisTaskQueue(TaskQueue):
-    def __init__(self, queue_name: str | None = None, redis_url: str | None = None) -> None:
+    """基于 Redis list 的队列。
+
+    client 由共享的 RedisClientProvider 提供而非每次新建：worker 空转时每秒
+    dequeue 一次，逐次建连等于零流量也每天数万次 TCP 握手。
+    """
+
+    def __init__(self, redis: RedisClientProvider | None = None, queue_name: str | None = None) -> None:
         self._queue_name = queue_name or settings.arq_queue_name
-        self._redis_url = redis_url or settings.redis_url
+        self._redis = redis or RedisClientProvider()
 
     async def enqueue(self, payload: QueuePayload) -> None:
         try:
-            import redis.asyncio as aioredis
-
-            client = aioredis.from_url(self._redis_url)
+            client = self._redis.client()
             await client.rpush(self._queue_name, json.dumps(payload.__dict__))
-            await client.aclose()
         except Exception as exc:  # pragma: no cover - 依赖外部服务
             raise ConnectionError(f"入队失败: {exc}") from exc
 
     async def dequeue(self) -> QueuePayload | None:
         try:
-            import redis.asyncio as aioredis
-
-            client = aioredis.from_url(self._redis_url)
+            client = self._redis.client()
             raw = await client.lpop(self._queue_name)
-            await client.aclose()
             if not raw:
                 return None
             data: dict[str, Any] = json.loads(raw)
