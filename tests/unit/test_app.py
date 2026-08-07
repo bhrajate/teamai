@@ -12,25 +12,27 @@ import asyncio
 
 import pytest
 
-import teamai.app as app_module
-from teamai.app import create_app, slack_enabled
+import app.backend.main as web_main
+import teamai.container as container_module
+from app.backend.main import create_app
 from teamai.config import settings
 
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch):
     """隔离全局容器与 settings，并跳过真实建表。"""
-    app_module.reset_container()
+    container_module.reset_container()
 
     async def _noop() -> None:
         return None
 
-    monkeypatch.setattr(app_module, "init_database", _noop)
+    # 打 web_main 上的引用而非 db 模块：create_app 的 lifespan 按模块级名字调用
+    monkeypatch.setattr(web_main, "init_db_or_warn", _noop)
     monkeypatch.setattr(settings, "slack_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "slack_signing_secret", "", raising=False)
     monkeypatch.setattr(settings, "slack_app_token", "", raising=False)
     yield
-    app_module.reset_container()
+    container_module.reset_container()
 
 
 def _paths(app) -> set[str]:  # type: ignore[no-untyped-def]
@@ -49,17 +51,19 @@ def _enable_slack(monkeypatch: pytest.MonkeyPatch, *, socket_mode: bool) -> None
 
 
 def test_无凭据时不接入slack() -> None:
-    assert slack_enabled() is False
+    assert settings.slack_enabled is False
     assert "/slack/events" not in _paths(create_app())
 
 
-def test_凭据齐备判定() -> None:
-    assert slack_enabled() is False
+def test_仅配app_token不算凭据齐备(monkeypatch: pytest.MonkeyPatch) -> None:
+    """app_token 只决定接入方式，不能顶替 bot_token/signing_secret。"""
+    monkeypatch.setattr(settings, "slack_app_token", "xapp-fake", raising=False)
+    assert settings.slack_enabled is False
 
 
 def test_events_api模式挂载http入口(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_slack(monkeypatch, socket_mode=False)
-    assert slack_enabled() is True
+    assert settings.slack_enabled is True
     assert "/slack/events" in _paths(create_app())
 
 
@@ -77,7 +81,7 @@ def test_admin_api路由始终存在() -> None:
 
 
 def test_容器在进程内复用() -> None:
-    assert app_module.get_container() is app_module.get_container()
+    assert container_module.get_container() is container_module.get_container()
 
 
 async def test_socket_mode任务随lifespan启停(monkeypatch: pytest.MonkeyPatch) -> None:

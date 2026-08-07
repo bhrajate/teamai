@@ -74,7 +74,7 @@
 - [x] 10. 实现 Slack 适配层与 Admin API
    - 实现 adapters/slack_app.py：slack-bolt AsyncApp 装配（app_mention、message 事件、Socket Mode）
    - 实现 adapters/admin_api.py：FastAPI 路由（频道实例管理、记忆管理、预算配置、权限策略、审计查询、标签管理）
-   - 实现 main.py：装配所有依赖，启动 Slack app + Admin API + Scheduler
+   - 实现 app/backend/main.py：装配所有依赖，启动 Admin API + Slack 事件入口（Scheduler 在 worker 进程）
    - 参考 Code-Design-Python.md §4.6 与 Design-claude-tag.md §3.1、§3.13
 
 - [ ]* 10.1 编写 Admin API 路由契约测试

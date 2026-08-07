@@ -27,10 +27,12 @@ Status: Draft v1.0
 ├── .env.example
 ├── docker-compose.yml            # postgres + redis + qdrant
 ├── docs/                         # PRD / 设计 / 实施文档
+├── app/                          # 进程入口（一个子包一个进程，只做装配与启动）
+│   ├── backend/main.py           # web 进程：create_app() ASGI 装配 + uvicorn 启动
+│   └── worker/main.py            # worker 进程：队列消费循环 + Scheduler 生命周期
 ├── src/
 │   └── teamai/
-│       ├── main.py               # 入口：Slack app + Admin API + Scheduler
-│       ├── container.py          # 组合根：装配全部依赖
+│       ├── container.py          # 组合根：装配全部依赖 + 进程内共享单例
 │       ├── config.py             # Settings (pydantic-settings)
 │       ├── domain/               # 领域模型与抽象契约（无外部依赖）
 │       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
@@ -107,24 +109,37 @@ Status: Draft v1.0
 ## 3. 分层依赖规则
 
 ```
-main → adapters ─┬→ application → agent → tools
-                 │        ↓          ↓       ↓
-                 └→ container      domain ←──┘
-                         ↓            ↑
-                   infrastructure ─────┘
+app/（进程入口）→ adapters ─┬→ application → agent → tools
+                            │        ↓          ↓       ↓
+                            └→ container      domain ←──┘
+                                     ↓            ↑
+                               infrastructure ─────┘
 ```
 
 依赖只允许向下，`util` 为叶子模块（零内部依赖），任何层可用。
+
+`app/` 在包外且不随 wheel 分发（`hatchling` 只打 `src/teamai`），因此方向严格单向：`app.*` 可 import `teamai.*`，`teamai.*` 不得 import `app.*`，否则安装态直接 ImportError。此约束由 `tests/unit/test_layering.py::test_src不依赖进程入口` 校验。
 
 - `domain` 无外部依赖，内部按类型分四个子包：领域模型（`models/`）+ 仓储接口（`repositories/`）+ 外部端口（`ports/`）+ 领域服务（`services/`）。各子包 `__init__.py` 汇总导出，跨层调用方写 `from teamai.domain.models import Task`；`domain` 内部互相引用走具体子模块（如 `teamai.domain.models.task`）以免绕回包级 `__init__`
 - `application` 依赖 domain / agent / tools，**不依赖 infrastructure**——持久化与队列均通过 domain 声明的抽象访问
 - `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
 - `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）。内部布局镜像 domain：`orm/` 与 `repositories/` 都按聚合分模块，一个聚合的表、mapper 与仓储实现路径同名，改字段时三边位置可推测
 - `infrastructure/orm/__init__.py` **必须导入全部表模块**：SQLAlchemy 只在类定义被执行时才把表注册进 `Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表，漏一个 import 对应的表就会静默不创建。此约束由 `tests/unit/test_orm_registry.py` 静态校验
-- `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）
+- `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）。同时持有进程内共享单例 `get_container()`：容器内含共享 AsyncSession 与 Redis 连接，重复装配会按调用次数放大连接数
 - `adapters` 最外层，接收已装配好的 Container
 
 抽象归属原则：**谁消费、谁定义**。接口放在消费方所在层或其下层，实现放在 infrastructure，从而保证 import 方向与依赖倒置一致。
+
+### 3.1 两个进程入口
+
+| 进程 | 启动 | 职责 |
+|------|------|------|
+| web | `python -m app.backend.main`，或 `uvicorn app.backend.main:create_app --factory` | Admin API + Slack 事件入口（Socket Mode 或 Events API 二选一，由 `slack_app_token` 是否配置决定） |
+| worker | `python -m app.worker.main` | 消费长任务队列 + APScheduler 定时调度 |
+
+拆两个进程的理由：长任务是小时/天级，与 Slack 事件的毫秒级响应放同一进程会互相拖累——长任务卡住事件循环会让 Slack 事件超时重投，而 web 按 QPS 扩容也会把 worker 副本一并放大、导致同一任务被多次执行。
+
+两者共用的启动动作是建表 `init_db_or_warn()`（在 `infrastructure/db.py`）：失败只告警不中断，否则 Postgres 未就绪时 `/api/health` 也探不到，编排系统无从区分「进程没起来」与「依赖没起来」。
 
 ## 4. 核心接口设计
 

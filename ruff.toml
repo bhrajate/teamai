@@ -1,6 +1,7 @@
 line-length = 120
 target-version = "py311"
-src = ["src", "tests"]
+# "." 让根目录下的 app/（进程入口包）被判为 first-party，与 teamai/tests 同块排序
+src = ["src", "tests", "."]
 
 [lint]
 select = [

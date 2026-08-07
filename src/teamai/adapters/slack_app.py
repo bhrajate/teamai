@@ -4,8 +4,8 @@ Slack 有两条互斥的事件通道：
 - Socket Mode：出方向 WebSocket 长连接，不监听端口，适合内网/无公网回调场景
 - Events API：Slack 发 HTTP webhook 进来，需要公网可达的 URL
 
-本模块两者都提供构建函数，但都不自己起服务器 —— 进程生命周期由 app.py 统管，
-避免 slack-bolt 自带的 aiohttp 服务器与 uvicorn 各占一个端口。
+本模块两者都提供构建函数，但都不自己起服务器 —— 进程生命周期由 web 进程入口
+（app/backend/main.py）统管，避免 slack-bolt 自带的 aiohttp 服务器与 uvicorn 各占一个端口。
 """
 
 from __future__ import annotations

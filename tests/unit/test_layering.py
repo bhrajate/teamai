@@ -11,7 +11,9 @@ import pathlib
 
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "teamai"
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+SRC = ROOT / "src" / "teamai"
+APP = ROOT / "app"
 
 # 各层允许依赖的层集合。util 为叶子（零内部依赖），config 仅被读取。
 ALLOWED: dict[str, set[str]] = {
@@ -29,20 +31,10 @@ ALLOWED: dict[str, set[str]] = {
         "domain", "application", "agent", "tools", "infrastructure",
         "adapters", "util", "config", "container",
     },
-    # 进程入口层：app 装配 ASGI 应用，main/worker 是两个进程入口
-    "app": {
-        "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "util", "config", "container", "app",
-    },
-    "worker": {
-        "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "util", "config", "container", "app", "worker",
-    },
-    "main": {
-        "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "util", "config", "container", "app", "main",
-    },
 }
+
+# 进程入口在包外的 app/ 目录（app.backend / app.worker），可依赖 teamai 全部层，
+# 故不列入 ALLOWED；方向由 test_src不依赖进程入口 单向锁死。
 
 
 def _layer(rel: pathlib.Path) -> str:
@@ -68,9 +60,42 @@ def _py_files() -> list[pathlib.Path]:
     return sorted(SRC.rglob("*.py"))
 
 
+def _imported_roots(path: pathlib.Path) -> list[tuple[int, str]]:
+    """返回 [(行号, 被导入模块全名)]，含全部 import 而非仅 teamai.*。"""
+    out: list[tuple[int, str]] = []
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            out.append((node.lineno, node.module))
+        elif isinstance(node, ast.Import):
+            out.extend((node.lineno, a.name) for a in node.names)
+    return out
+
+
 def test_源码目录存在() -> None:
     assert SRC.is_dir(), f"未找到源码目录: {SRC}"
     assert _py_files(), "源码目录为空"
+
+
+def test_src不依赖进程入口() -> None:
+    """依赖方向：app.* → teamai.*，反向即为环。
+
+    teamai 是可安装包（wheel 只含 src/teamai），app/ 不随包分发；
+    src 里出现 `import app.x` 会在安装态直接 ImportError。
+    """
+    bad: list[str] = []
+    for path in _py_files():
+        for lineno, mod in _imported_roots(path):
+            if mod == "app" or mod.startswith("app."):
+                bad.append(f"{path.relative_to(SRC)}:{lineno} {mod}")
+    assert not bad, "teamai 包内不得依赖 app/ 下的进程入口:\n  " + "\n  ".join(bad)
+
+
+def test_进程入口只做装配与启动() -> None:
+    """app/ 下不应出现业务分层模块，逻辑一律落在 teamai。"""
+    assert APP.is_dir(), f"未找到进程入口目录: {APP}"
+    entries = sorted(p.name for p in APP.iterdir() if p.is_dir() and not p.name.startswith((".", "__")))
+    assert entries == ["backend", "worker"], f"进程入口子包与预期不符: {entries}"
 
 
 def test_无越层依赖() -> None:

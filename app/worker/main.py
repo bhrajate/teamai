@@ -5,7 +5,8 @@
 重投，而 web 进程按 QPS 扩容也会把 worker 副本一并放大、导致同一任务被多次执行。
 两者的扩缩容维度与崩溃影响面不同，所以按进程切开。
 
-用法：python -m teamai.worker
+用法：
+    python -m app.worker.main
 """
 
 from __future__ import annotations
@@ -15,10 +16,10 @@ import contextlib
 import logging
 import signal
 
-from teamai.app import init_database
 from teamai.container import Container, build_container
 from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload
+from teamai.infrastructure.db import init_db_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ def register_jobs(container: Container) -> None:
 async def _main() -> None:
     from teamai.infrastructure.scheduler import scheduler
 
-    await init_database()
+    await init_db_or_warn()
     container = build_container()
 
     stop = asyncio.Event()

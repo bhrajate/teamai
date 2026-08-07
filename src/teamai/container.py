@@ -1,4 +1,8 @@
-"""组合根：装配全部依赖，供 main.py 与适配层复用。"""
+"""组合根：装配全部依赖，供进程入口（app/）与适配层复用。
+
+`build_container()` 每次调用都新装一套，测试可按需要造独立实例；
+`get_container()` 是进程内共享的那一份，由入口脚本与适配层取用。
+"""
 
 from __future__ import annotations
 
@@ -135,3 +139,24 @@ def build_container() -> Container:
         router=router,
         tools=tools,
     )
+
+
+_container: Container | None = None
+
+
+def get_container() -> Container:
+    """进程内共享的组合根。首次调用时装配。
+
+    单例而非每次新建：容器持有共享 AsyncSession 与 Redis 连接，
+    重复装配会按调用次数放大连接数。
+    """
+    global _container
+    if _container is None:
+        _container = build_container()
+    return _container
+
+
+def reset_container() -> None:
+    """丢弃已装配的容器。供测试隔离用。"""
+    global _container
+    _container = None

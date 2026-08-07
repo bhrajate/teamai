@@ -43,5 +43,14 @@ class Settings(BaseSettings):
     context_max_messages: int = 60
     context_summary_threshold: int = 120
 
+    @property
+    def slack_enabled(self) -> bool:
+        """Slack 凭据是否齐备。缺任一项则只跑 Admin API，不接入 Slack。
+
+        `slack_app_token` 不在此列：它只决定接入方式（配了走 Socket Mode，
+        没配走 Events API），不决定是否接入。
+        """
+        return bool(self.slack_bot_token and self.slack_signing_secret)
+
 
 settings = Settings()
