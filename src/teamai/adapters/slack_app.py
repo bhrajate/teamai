@@ -1,4 +1,12 @@
-"""Slack 适配层：slack-bolt AsyncApp 装配。"""
+"""Slack 适配层：slack-bolt AsyncApp 装配与两种接入方式。
+
+Slack 有两条互斥的事件通道：
+- Socket Mode：出方向 WebSocket 长连接，不监听端口，适合内网/无公网回调场景
+- Events API：Slack 发 HTTP webhook 进来，需要公网可达的 URL
+
+本模块两者都提供构建函数，但都不自己起服务器 —— 进程生命周期由 app.py 统管，
+避免 slack-bolt 自带的 aiohttp 服务器与 uvicorn 各占一个端口。
+"""
 
 from __future__ import annotations
 
@@ -55,3 +63,24 @@ def build_slack_app(router: MessageRouter) -> AsyncApp:
             logger.error(f"message 处理失败: {exc}")
 
     return app
+
+
+def build_socket_mode_handler(app: AsyncApp):
+    """构建 Socket Mode 处理器。
+
+    调用方用 `await handler.start_async()` 建立长连接（会一直阻塞，需放后台任务），
+    用 `await handler.close_async()` 断开。
+    """
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+
+    return AsyncSocketModeHandler(app, settings.slack_app_token)
+
+
+def build_events_handler(app: AsyncApp):
+    """构建 Events API 处理器，供 FastAPI 路由转发请求。
+
+    用法：`await handler.handle(request)`，签名校验由 slack-bolt 内部完成。
+    """
+    from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+
+    return AsyncSlackRequestHandler(app)

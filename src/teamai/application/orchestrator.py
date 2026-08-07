@@ -33,6 +33,7 @@ class TaskOrchestrator:
         tag_name: str | None = None,
         model_level: str = "light",
         async_execution: bool = False,
+        prompt: str = "",
     ) -> Task:
         task = Task(
             id=gen_id("task"),
@@ -52,7 +53,7 @@ class TaskOrchestrator:
             detail={"intent": intent, "tag": tag_name},
         )
         if async_execution:
-            await self._enqueue(task, model_level)
+            await self._enqueue(task, model_level, prompt)
         return task
 
     async def transition(self, task: Task, to: TaskStatus, actor: str) -> Task:
@@ -78,10 +79,13 @@ class TaskOrchestrator:
             raise ValueError(f"任务已处于终态 {task.status.value}，无法取消")
         return await self.transition(task, TaskStatus.CANCELLED, actor)
 
-    async def _enqueue(self, task: Task, model_level: str) -> None:
+    async def _enqueue(self, task: Task, model_level: str, prompt: str = "") -> None:
         payload = QueuePayload(
             task_id=task.id,
             channel_instance_id=task.channel_instance_id,
             model_level=model_level,
+            prompt=prompt,
+            tag_name=task.tag_name,
+            thread_ts=task.thread_ts,
         )
         await self._queue.enqueue(payload)

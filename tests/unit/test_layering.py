@@ -29,9 +29,18 @@ ALLOWED: dict[str, set[str]] = {
         "domain", "application", "agent", "tools", "infrastructure",
         "adapters", "util", "config", "container",
     },
+    # 进程入口层：app 装配 ASGI 应用，main/worker 是两个进程入口
+    "app": {
+        "domain", "application", "agent", "tools", "infrastructure",
+        "adapters", "util", "config", "container", "app",
+    },
+    "worker": {
+        "domain", "application", "agent", "tools", "infrastructure",
+        "adapters", "util", "config", "container", "app", "worker",
+    },
     "main": {
         "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "util", "config", "container", "main",
+        "adapters", "util", "config", "container", "app", "main",
     },
 }
 

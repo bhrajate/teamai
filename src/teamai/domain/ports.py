@@ -14,6 +14,11 @@ class QueuePayload:
     task_id: str
     channel_instance_id: str
     model_level: str
+    # 执行 Agent 需要原始指令，但 tasks 表只存 intent 不存原文，
+    # 故由队列载荷携带。默认空串保证旧消息仍能反序列化。
+    prompt: str = ""
+    tag_name: str | None = None
+    thread_ts: str = ""
 
 
 class TaskQueue(ABC):

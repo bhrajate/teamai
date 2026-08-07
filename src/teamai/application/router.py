@@ -89,16 +89,31 @@ class MessageRouter:
             model_level="full" if intent.kind in ("code_review", "bugfix", "data_analysis") else "light",
         )
         await self._orchestrator.transition(task, TaskStatus.RUNNING, user_id)
+        return await self.execute_task(task, text, tag_name, instance, actor=user_id)
 
-        result = await self._run_agent(task, text, tag_name, instance)
+    async def execute_task(
+        self,
+        task,
+        prompt: str,
+        tag_name: str | None,
+        instance,
+        *,
+        actor: str,
+    ) -> RoutingDecision:
+        """执行 Agent 并按结果推进任务状态。
+
+        调用方须已把任务置为 RUNNING。同步链路（MessageRouter）与异步链路
+        （worker 消费队列）共用本方法，保证两条路径的状态推进与回复文案一致。
+        """
+        result = await self._run_agent(task, prompt, tag_name, instance)
 
         if result.status is StageStatus.DONE:
-            await self._orchestrator.transition(task, TaskStatus.DONE, user_id)
+            await self._orchestrator.transition(task, TaskStatus.DONE, actor)
             return RoutingDecision(handler="respond", message=result.output)
         if result.status is StageStatus.PAUSED:
-            await self._orchestrator.transition(task, TaskStatus.PAUSED, user_id)
+            await self._orchestrator.transition(task, TaskStatus.PAUSED, actor)
             return RoutingDecision(handler="respond", message=result.error or "任务因预算暂停")
-        await self._orchestrator.transition(task, TaskStatus.FAILED, user_id)
+        await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
         return RoutingDecision(handler="respond", message=f"任务执行失败：{result.error}")
 
     async def _run_agent(self, task, prompt: str, tag_name: str | None, instance):
