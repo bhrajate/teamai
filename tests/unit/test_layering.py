@@ -15,21 +15,20 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "teamai"
 APP = ROOT / "app"
 
-# 各层允许依赖的层集合。util 为叶子（零内部依赖），config 仅被读取。
+# 各层允许依赖的层集合。domain 为叶子（零内部依赖），config 仅被读取。
 ALLOWED: dict[str, set[str]] = {
     # 包根 src/teamai/__init__.py，当前为空；登记以便日后加了 import 也受校验
     "__init__": set(),
-    "domain": {"domain", "util"},
-    "util": {"util"},
+    "domain": {"domain"},
     "config": {"config"},
-    "tools": {"domain", "tools", "util", "config"},
-    "agent": {"domain", "tools", "agent", "util", "config"},
-    "application": {"domain", "application", "agent", "tools", "util", "config"},
-    "infrastructure": {"domain", "infrastructure", "util", "config"},
-    "container": {"domain", "application", "agent", "tools", "infrastructure", "util", "config", "container"},
+    "tools": {"domain", "tools", "config"},
+    "agent": {"domain", "tools", "agent", "config"},
+    "application": {"domain", "application", "agent", "tools", "config"},
+    "infrastructure": {"domain", "infrastructure", "config"},
+    "container": {"domain", "application", "agent", "tools", "infrastructure", "config", "container"},
     "adapters": {
         "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "util", "config", "container",
+        "adapters", "config", "container",
     },
 }
 
@@ -125,19 +124,24 @@ def test_application_不依赖_infrastructure() -> None:
     )
 
 
-def test_domain_只依赖自身与_util() -> None:
+def test_domain_只依赖自身() -> None:
+    """domain 是叶子层：不得 import teamai 下任何其他层。
+
+    原先允许 domain 依赖 util，util/ 撤销后（gen_id 移入 domain/identity.py）
+    这条收紧为「只依赖自身」。
+    """
     bad: list[str] = []
     for path in sorted((SRC / "domain").rglob("*.py")):
         for lineno, mod in _internal_imports(path):
             tgt = mod.split(".")[1]
-            if tgt not in {"domain", "util"}:
+            if tgt != "domain":
                 bad.append(f"{path.relative_to(SRC)}:{lineno} -> {tgt}")
     assert not bad, "domain 层须保持零外向依赖:\n  " + "\n  ".join(bad)
 
 
 def test_domain_不导入三方库() -> None:
     """domain 应只用标准库，避免领域模型被外部框架污染。"""
-    allow = {"abc", "dataclasses", "datetime", "enum", "typing", "__future__", "collections"}
+    allow = {"abc", "dataclasses", "datetime", "enum", "typing", "__future__", "collections", "uuid"}
     bad: list[str] = []
     for path in sorted((SRC / "domain").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))

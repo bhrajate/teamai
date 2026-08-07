@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException
 
 from teamai.adapters.admin.serializers import policy_to_dict
 from teamai.container import Container
+from teamai.domain.identity import gen_id
 from teamai.domain.models import AmbientRule, PermissionPolicy
-from teamai.util.events import gen_id
 
 
 def build_policy_router(container: Container) -> APIRouter:

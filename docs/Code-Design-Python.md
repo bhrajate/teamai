@@ -35,6 +35,7 @@ Status: Draft v1.0
 │       ├── container.py          # 组合根：装配全部依赖 + 进程内共享单例
 │       ├── config.py             # Settings (pydantic-settings)
 │       ├── domain/               # 领域模型与抽象契约（无外部依赖）
+│       │   ├── identity.py      # gen_id：实体 ID 生成（各层共用）
 │       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
 │       │   │   ├── channel.py    # ChannelInstance
 │       │   │   ├── task.py       # Task + TaskStatus 状态机
@@ -106,8 +107,6 @@ Status: Draft v1.0
 │       │       ├── audit.py     # /channels/{id}/audit
 │       │       ├── task.py      # /channels/{id}/tasks
 │       │       └── tag.py       # /channels/{id}/tags
-│       └── util/
-│           └── events.py         # 内部事件/幂等键 + ULID 生成（gen_id）
 └── tests/
     ├── conftest.py
     ├── unit/                     # 状态机/预算/鉴权单元测试
@@ -125,7 +124,7 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
                                infrastructure ─────┘
 ```
 
-依赖只允许向下，`util` 为叶子模块（零内部依赖），任何层可用。
+依赖只允许向下，`domain` 为叶子层（零内部依赖）。原先另有一个 `util/` 目录承载跨层工具，但它只装了 `gen_id`，且需要一条「任何层都可导入 util」的特例规则；`gen_id` 移入 `domain/identity.py` 后该目录与特例一并撤销 —— domain 本就是所有层的公共底座，跨层词汇放这里无需开例外。
 
 `app/` 在包外且不随 wheel 分发（`hatchling` 只打 `src/teamai`），因此方向严格单向：`app.*` 可 import `teamai.*`，`teamai.*` 不得 import `app.*`，否则安装态直接 ImportError。此约束由 `tests/unit/test_layering.py::test_src不依赖进程入口` 校验。
 

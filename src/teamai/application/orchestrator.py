@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from teamai.domain.identity import gen_id
 from teamai.domain.models import AuditAction, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
 from teamai.domain.repositories import TaskRepository
 from teamai.domain.services import AuditLogWriter
-from teamai.util.events import gen_id
 
 
 class TaskOrchestrator:

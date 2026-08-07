@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException
 
 from teamai.adapters.admin.serializers import budget_to_dict
 from teamai.container import Container
+from teamai.domain.identity import gen_id
 from teamai.domain.models import BudgetPeriod, BudgetQuota, BudgetScope
-from teamai.util.events import gen_id
 
 
 def build_budget_router(container: Container) -> APIRouter:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from teamai.domain.identity import gen_id
 from teamai.domain.models import AuditAction, TagTemplate
 from teamai.domain.repositories import TagRepository
 from teamai.domain.services import AuditLogWriter
-from teamai.util.events import gen_id
 
 
 class TagResolver:

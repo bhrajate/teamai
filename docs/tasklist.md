@@ -4,7 +4,7 @@
    - 创建 src/teamai/ 分层目录结构（domain/application/agent/tools/infrastructure/adapters）
    - 配置 pyproject.toml、.env.example、docker-compose.yml（postgres + redis + qdrant）
    - 实现 config.py（pydantic-settings：Slack token、Anthropic key、DB/Redis/Qdrant 连接、模型分级映射）
-   - 实现 util/events.py（ULID 生成 gen_id、事件幂等键 channel+ts+subtype）
+   - 实现 domain/identity.py（gen_id：带前缀的实体 ID 生成）
    - 搭建 pytest 框架与 tests/conftest.py
    - 参考 Code-Design-Python.md §1、§2
 
