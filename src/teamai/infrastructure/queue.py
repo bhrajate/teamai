@@ -18,7 +18,7 @@ class RedisTaskQueue(TaskQueue):
     """
 
     def __init__(self, redis: RedisClientProvider | None = None, queue_name: str | None = None) -> None:
-        self._queue_name = queue_name or settings.arq_queue_name
+        self._queue_name = queue_name or settings.queue_name
         self._redis = redis or RedisClientProvider()
 
     async def enqueue(self, payload: QueuePayload) -> None:

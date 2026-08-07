@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 venv/
 .env
+# 本机配置，拷 config/config.example.yaml 生成
+config/config.yaml
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

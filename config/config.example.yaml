@@ -1,0 +1,50 @@
+# TeamAI 项目配置示例
+#
+# 用法：拷一份为 config.yaml（已在 .gitignore 中），按需改动。
+#   cp config.example.yaml config.yaml
+#
+# 这里只放**非敏感可调项**。凭据与连接串（Slack token、ANTHROPIC_API_KEY、
+# DATABASE_URL / REDIS_URL / QDRANT_URL）走 .env，见 .env.example ——
+# 它们每套环境都不同，也不该出现在任何可能被提交的文件里。
+#
+# 优先级：环境变量 > .env > config.yaml > 代码里的字段默认值（src/teamai/config.py）。
+# 本文件缺失或留空都不会报错，直接回落默认值；下面每项都是当前默认值。
+#
+# 嵌套分组只为可读，加载时按下划线展平成平铺字段：
+#   model.light_primary -> settings.model_light_primary
+# 故新增分组时留意展平后的名字要与 Settings 的字段名对得上。
+
+# LLM 模型分级。轻量任务用 light（primary 不可用时降级到 fallback），
+# 推理链长或改动有风险的任务用 full，映射见 application/intent.py。
+model:
+  light_primary: claude-sonnet-4-5
+  light_fallback: claude-3-5-haiku
+  full: claude-opus-4-8
+
+# 长任务队列（Redis list）。name 是 Redis 里的键名。
+queue:
+  name: teamai-tasks
+
+# Slack 事件去重记录的存活时间（秒）。默认 1 小时以覆盖 Slack 的重投窗口
+# （官方三次重投在约半小时内发完），到期即淘汰以免白占内存。
+event_dedup:
+  ttl_seconds: 3600
+
+# 向量库集合名。连接地址 QDRANT_URL 走 .env。
+qdrant:
+  collection: teamai-memory
+
+# token 预算的统计周期。
+budget:
+  period: MONTHLY  # MONTHLY | DAILY | WEEKLY
+
+# Admin API 监听地址。
+admin_api:
+  host: 0.0.0.0
+  port: 8000
+
+# 上下文压缩：超过 max_messages 条后按最近优先裁剪，
+# 超过 summary_threshold 条则把更早的历史摘要化，防止上下文溢出。
+context:
+  max_messages: 60
+  summary_threshold: 120

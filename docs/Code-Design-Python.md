@@ -14,7 +14,7 @@ Status: Draft v1.0
 | LLM 客户端 | pydantic-ai v2（内置 AnthropicModel + UsageLimits + Agent.tool） | 原生 async、工具调用、预算管控、结构化输出开箱即用 |
 | 数据库 | PostgreSQL + SQLAlchemy 2.0 (async) | 任务/实例/审计持久化 |
 | 向量库 | Qdrant（本地开发用 Chroma） | 频道记忆语义检索 |
-| 任务队列 | Redis + ARQ | 异步长任务与定时任务 |
+| 任务队列 | Redis list（RedisTaskQueue）+ APScheduler | 异步长任务与定时任务。未引入 ARQ：队列语义只需 rpush/lpop，自实现即可，少一个依赖 |
 | 调度 | APScheduler（cron 语义） | 定时/周期任务 |
 | 配置 | pydantic-settings | 类型安全的环境配置 |
 | 测试 | pytest + pytest-asyncio | 单元/集成/评测 |
@@ -24,7 +24,9 @@ Status: Draft v1.0
 
 ```
 ├── pyproject.toml
-├── .env.example
+├── .env.example                  # 凭据与连接串示例，拷为 .env（不入库）
+├── config/
+│   └── config.example.yaml       # 非敏感可调项示例，拷为 config/config.yaml（不入库）
 ├── docker-compose.yml            # postgres + redis + qdrant
 ├── docs/                         # PRD / 设计 / 实施文档
 ├── app/                          # 进程入口（一个子包一个进程，只做装配与启动）
@@ -33,7 +35,7 @@ Status: Draft v1.0
 ├── src/
 │   └── teamai/
 │       ├── container.py          # 组合根：装配全部依赖 + 进程内共享单例
-│       ├── config.py             # Settings (pydantic-settings)
+│       ├── config.py             # Settings：.env（凭据）+ config/config.yaml（可调项）
 │       ├── domain/               # 领域模型与抽象契约（无外部依赖）
 │       │   ├── identity.py      # gen_id：ULID 实体 ID（各层共用，按时间可排序）
 │       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
@@ -154,6 +156,21 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 拆两个进程的理由：长任务是小时/天级，与 Slack 事件的毫秒级响应放同一进程会互相拖累——长任务卡住事件循环会让 Slack 事件超时重投，而 web 按 QPS 扩容也会把 worker 副本一并放大、导致同一任务被多次执行。
 
 两者共用的启动动作是建表 `init_db_or_warn()`（在 `infrastructure/db.py`）：失败只告警不中断，否则 Postgres 未就绪时 `/api/health` 也探不到，编排系统无从区分「进程没起来」与「依赖没起来」。
+
+### 3.2 配置来源
+
+配置按「是否敏感」分两处，都不入库，各留一份 example：
+
+| 文件 | 装什么 | 例子 |
+| --- | --- | --- |
+| `.env` | 凭据与连接串 | `SLACK_BOT_TOKEN`、`ANTHROPIC_API_KEY`、`DATABASE_URL`、`REDIS_URL`、`QDRANT_URL` |
+| `config/config.yaml` | 非敏感可调项 | `model.*`、`queue.name`、`event_dedup.ttl_seconds`、`qdrant.collection`、`budget.period`、`admin_api.*`、`context.*` |
+
+优先级 **环境变量 > `.env` > `config/config.yaml` > 字段默认值**（`src/teamai/config.py`）。两个文件缺失或留空都不报错，直接回落默认值 —— 新克隆下来不配任何东西也能跑起来。
+
+`config/config.yaml` 里嵌套分组只为可读，加载时由 `FlatYamlSettingsSource` 按下划线展平成平铺字段（`model.light_primary` → `settings.model_light_primary`），因此代码里访问方式不变。pydantic-settings 自带的 `YamlConfigSettingsSource` 按字段名匹配顶层键，嵌套 dict 会原样传给校验器并因 `extra_forbidden` 报错，故必须先展平。
+
+这层衔接是隐式的：**展平后的名字与 `Settings` 字段名对不上时不会报错，只是写了不生效**。`tests/unit/test_config.py` 因此校验 `config/config.example.yaml` 的每个键都对应真实字段、且示例值与默认值一致。
 
 ## 4. 核心接口设计
 
@@ -391,7 +408,7 @@ sequenceDiagram
 
 | 决策点 | 方案 | 理由 |
 |--------|------|------|
-| 长任务执行模型 | ARQ worker 异步消费任务队列 | 与请求线程解耦，支持小时/天级任务 |
+| 长任务执行模型 | worker 进程轮询消费 Redis 队列（app/worker/main.py） | 与请求线程解耦，支持小时/天级任务 |
 | 任务状态持久化 | PostgreSQL 事务 + 状态机校验 | 崩溃恢复与审计一致 |
 | 记忆检索 | 文本 embedding 入 Qdrant + KV 存偏好 | 语义召回 + 精确偏好 |
 | 幂等 | 按信封 `event_id` 去重，Redis `SET NX EX` 原子记账 | 防 Slack 重投/乱序 |

@@ -12,6 +12,10 @@ dependencies = [
     "aiohttp>=3.10",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    # config.yaml 的加载用 pydantic-settings 的 YamlConfigSettingsSource，
+    # 它需要 pyyaml，但只在 pydantic-settings 的 yaml extra 里声明；
+    # 不显式声明则 teamai.config 在干净环境下 import 即报错。
+    "pyyaml>=6.0",
     "pydantic-ai>=2.0.0",
     "sqlalchemy>=2.0",
     "asyncpg>=0.29",
