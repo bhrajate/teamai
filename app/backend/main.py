@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
     if settings.slack_enabled:
         from teamai.adapters.slack import build_slack_app
 
-        slack_app = build_slack_app(container.router)
+        slack_app = build_slack_app(container.router, container.dedup)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

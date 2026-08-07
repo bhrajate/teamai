@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from teamai.domain.ports.dedup import EventDeduplicator
 from teamai.domain.ports.queue import QueuePayload, TaskQueue
 
-__all__ = ["QueuePayload", "TaskQueue"]
+__all__ = ["EventDeduplicator", "QueuePayload", "TaskQueue"]

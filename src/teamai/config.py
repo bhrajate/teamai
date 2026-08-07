@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Redis / Queue
     redis_url: str = "redis://localhost:6379/0"
     arq_queue_name: str = "teamai-tasks"
+    # 事件去重记录的存活时间。默认 1 小时，覆盖 Slack 的重投窗口
+    # （官方三次重投在约半小时内发完），到期即淘汰以免白占内存。
+    event_dedup_ttl_seconds: int = 3600
 
     # Vector
     qdrant_url: str = "http://localhost:6333"

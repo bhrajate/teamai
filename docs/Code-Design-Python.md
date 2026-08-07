@@ -53,7 +53,8 @@ Status: Draft v1.0
 │       │   │   ├── channel.py    # ChannelRepository
 │       │   │   └── audit.py      # AuditRepository
 │       │   ├── ports/            # 外部系统端口
-│       │   │   └── queue.py      # TaskQueue / QueuePayload
+│       │   │   ├── queue.py      # TaskQueue / QueuePayload
+│       │   │   └── dedup.py      # EventDeduplicator（Slack 事件去重）
 │       │   └── services/         # 领域服务
 │       │       └── audit_writer.py  # AuditLogWriter（application/agent 共用）
 │       ├── application/          # 用例层（编排逻辑）
@@ -94,6 +95,7 @@ Status: Draft v1.0
 │       │   │   ├── channel.py    # SQLChannelRepository
 │       │   │   └── audit.py      # SQLAuditRepository（JSON 字段转换）
 │       │   ├── queue.py          # RedisTaskQueue（TaskQueue 实现）
+│       │   ├── dedup.py          # RedisEventDeduplicator（SET NX EX，内存兜底）
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
 │       │   └── scheduler.py      # APScheduler 封装
 │       ├── adapters/             # 平台适配层
@@ -390,7 +392,7 @@ sequenceDiagram
 | 长任务执行模型 | ARQ worker 异步消费任务队列 | 与请求线程解耦，支持小时/天级任务 |
 | 任务状态持久化 | PostgreSQL 事务 + 状态机校验 | 崩溃恢复与审计一致 |
 | 记忆检索 | 文本 embedding 入 Qdrant + KV 存偏好 | 语义召回 + 精确偏好 |
-| 幂等 | channel+ts+subtype 生成事件幂等键 | 防 Slack 重投/乱序 |
+| 幂等 | 按信封 `event_id` 去重，Redis `SET NX EX` 原子记账 | 防 Slack 重投/乱序 |
 | 模型分级 | ModelRegistry.build(model_level) 预装配不同 Agent | 简单任务轻量模型，复杂任务旗舰模型 |
 | 预算硬上限 | pydantic-ai UsageLimits + Anthropic task_budget | 超限抛 UsageLimitExceeded → 任务 PAUSED |
 | 上下文压缩 | 最近优先 + 历史摘要化 | 防止长任务上下文溢出 |

@@ -18,7 +18,7 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.router import MessageRouter
 from teamai.application.tag import TagResolver
 from teamai.config import settings
-from teamai.domain.ports import TaskQueue
+from teamai.domain.ports import EventDeduplicator, TaskQueue
 from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
@@ -29,6 +29,7 @@ from teamai.domain.repositories import (
     TaskRepository,
 )
 from teamai.domain.services import AuditLogWriter
+from teamai.infrastructure.dedup import build_event_deduplicator
 from teamai.infrastructure.queue import RedisTaskQueue
 from teamai.infrastructure.repositories import (
     SQLAuditRepository,
@@ -56,6 +57,7 @@ class Container:
     channel_repo: ChannelRepository
     audit_repo: AuditRepository
     queue: TaskQueue
+    dedup: EventDeduplicator
 
     audit: AuditLogWriter
     orchestrator: TaskOrchestrator
@@ -96,6 +98,7 @@ def build_container() -> Container:
     audit_repo = SQLAuditRepository(session)
 
     queue = RedisTaskQueue()
+    dedup = build_event_deduplicator()
 
     audit = AuditLogWriter(audit_repo)
     orchestrator = TaskOrchestrator(task_repo, audit, queue)
@@ -129,6 +132,7 @@ def build_container() -> Container:
         channel_repo=channel_repo,
         audit_repo=audit_repo,
         queue=queue,
+        dedup=dedup,
         audit=audit,
         orchestrator=orchestrator,
         budget=budget,
