@@ -23,11 +23,15 @@ Status: Draft v1.0
 ## 2. 项目目录结构
 
 ```
+├── Makefile                      # 开发与部署入口，make help 看全部目标
 ├── pyproject.toml
 ├── .env.example                  # 凭据与连接串示例，拷为 .env（不入库）
 ├── config/
 │   └── config.example.yaml       # 非敏感可调项示例，拷为 config/config.yaml（不入库）
-├── docker-compose.yml            # postgres + redis + qdrant
+├── deploy/
+│   ├── Dockerfile                # web/worker 共用一份镜像，靠启动命令区分
+│   ├── Dockerfile.dockerignore   # 上下文忽略规则（放这里也生效，见 §3.3）
+│   └── docker-compose.yml        # 本地依赖：postgres + redis + qdrant
 ├── docs/                         # PRD / 设计 / 实施文档
 ├── app/                          # 进程入口（一个子包一个进程，只做装配与启动）
 │   ├── backend/main.py           # web 进程：create_app() ASGI 装配 + uvicorn 启动
@@ -428,21 +432,43 @@ sequenceDiagram
 | 安全测试 | 频道隔离（ch_A 无法读 ch_B 记忆）；审计完整性断言 | §7.4 |
 | 模型降级 | FallbackModel 主模型失败自动切换备模型；重试逻辑由 pydantic-ai 托管 | §3.6 |
 
-## 8. 开发环境依赖（docker-compose）
+## 8. 开发环境与构建
 
-```yaml
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: teamai
-      POSTGRES_PASSWORD: teamai
-      POSTGRES_DB: teamai
-  redis:
-    image: redis:7
-  qdrant:
-    image: qdrant/qdrant:latest
+统一入口是根目录 `Makefile`，`make help` 列出全部目标。不在此重复各目标的实现，以文件为准。
+
+上手三步：
+
+```bash
+make install   # uv sync，建 .venv 并装依赖
+make config    # 从示例生成 config/config.yaml 与 .env（已存在则跳过）
+make up        # 起依赖容器：postgres + redis + qdrant
+make run-web   # 另开一个终端起 worker：make run-worker
 ```
+
+开发目标（`lint` / `fmt` / `test` / `check` / `run-*`）直接用本地 `.venv` 跑，不进容器 —— 改代码即时生效，无需重建镜像。容器目标（`up` / `down` / `build` / `logs` / `ps`）管依赖服务与镜像。
+
+**依赖服务见 `deploy/docker-compose.yml`，只含 postgres / redis / qdrant，不含 app 自身。** 其中两点值得留意：
+
+- `name: teamai` 是显式写死的。compose 的默认项目名取自 compose 文件所在目录，本文件在 `deploy/` 下则默认叫 `deploy`；一台机器上多个仓库都把 compose 放在 `deploy/` 时会共用命名空间，compose 会把别的项目里 `project=deploy` 且同 service 名的容器当成本项目的并直接 recreate。本文件从仓库根移入 `deploy/` 时就撞掉过邻近仓库的 postgres 容器。
+- 宿主端口可用 `POSTGRES_PORT` / `REDIS_PORT` / `QDRANT_PORT` 覆盖（默认 5432 / 6379 / 6333），开发机上端口常已被占。这几个变量由 compose 读取，因此 Makefile 里的 `docker compose` 显式带了 `--env-file .env --project-directory .` —— compose 的 project directory 默认取 compose 文件所在目录，不指定的话它找的是 `deploy/.env` 而非仓库根的 `.env`，改了也不生效。
+
+### 8.1 镜像
+
+`deploy/Dockerfile` 一份镜像同时供 web 与 worker，靠启动命令区分（默认 `python -m app.backend.main`，worker 传 `python -m app.worker.main`）。多阶段构建：uv 镜像装依赖，运行阶段只留 `python:3.11-slim` + venv，非 root 运行。
+
+```bash
+make build      # docker build -f deploy/Dockerfile -t teamai:latest .
+make image-run  # 起 web，挂载本机 config/ 与 .env
+```
+
+三处不显然但必要的细节：
+
+- **构建上下文必须是仓库根**，因为要 `src/`、`app/`、`pyproject.toml`、`uv.lock`。故命令形如 `docker build -f deploy/Dockerfile .`。
+- **`app/` 必须单独 COPY。** wheel 只打 `src/teamai`（`tool.hatch.build.targets.wheel`），进程入口在包外，不随包安装进来。
+- **`uv sync` 必须带 `--no-editable`。** 默认的 editable 安装只在 site-packages 留一个 `.pth` 指向构建阶段的 `/build/src`，而运行阶段只拷 venv 不拷源码，那个路径不存在 —— 结果是镜像能构建成功但一 `import teamai` 就 `ModuleNotFoundError`。
+- 忽略规则在 `deploy/Dockerfile.dockerignore` 而非仓库根的 `.dockerignore`：上下文根是仓库根，而 `.dockerignore` 默认只从上下文根读取；BuildKit 支持 `<dockerfile>.dockerignore` 这一形式，故可与 Dockerfile 放在一起。**实测确认过它生效**（排除后上下文 12.69 kB，不排除则 `.venv` 的 323 MB 一并进去）。
+
+配置不进镜像：`config/config.yaml` 与 `.env` 都含环境相关内容，运行时挂载或用环境变量注入。镜像里只带一份 `config/config.example.yaml` 便于进容器排查时对照字段名。
 
 ## 9. 参考
 

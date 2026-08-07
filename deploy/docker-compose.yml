@@ -1,0 +1,50 @@
+# 本地开发依赖。app 自身不在这里 —— web/worker 在宿主机跑
+# （make run-web / make run-worker），改代码不必重建镜像；镜像构建见 deploy/Dockerfile。
+#
+# ⚠️ name 必须显式写死。compose 的默认项目名取自 compose 文件所在目录，本文件在
+# deploy/ 下则默认叫 "deploy" —— 而一台机器上多个仓库都把 compose 放在 deploy/
+# 时，它们共用同一个命名空间：compose 会把别的项目里 project=deploy 且
+# service=postgres 的容器当成本项目的并直接 recreate。这不是假想，本文件从仓库根
+# 移到 deploy/ 时就撞掉过邻近仓库的 postgres 容器（命名卷未受影响，容器被销毁）。
+name: teamai
+
+# 宿主端口可覆盖：开发机上常已跑着别的 postgres/redis/qdrant，端口撞了就起不来。
+# 在 .env 里写 POSTGRES_PORT=15432 之类即可，容器内端口不变，
+# 相应把 DATABASE_URL / REDIS_URL / QDRANT_URL 也指到新端口。
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: teamai
+      POSTGRES_PASSWORD: teamai
+      POSTGRES_DB: teamai
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teamai -d teamai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  pgdata:
+  qdrant_data:

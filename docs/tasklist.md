@@ -2,7 +2,7 @@
 
 - [x] 1. 初始化项目结构与基础设施
    - 创建 src/teamai/ 分层目录结构（domain/application/agent/tools/infrastructure/adapters）
-   - 配置 pyproject.toml、.env.example、config/config.example.yaml、docker-compose.yml（postgres + redis + qdrant）
+   - 配置 pyproject.toml、Makefile、.env.example、config/config.example.yaml、deploy/docker-compose.yml（postgres + redis + qdrant）、deploy/Dockerfile
    - 实现 config.py（pydantic-settings：凭据与连接串走 .env，非敏感可调项走 config/config.yaml 并展平嵌套；优先级 环境变量 > .env > yaml > 默认值）
    - 实现 domain/identity.py（gen_id：`<前缀>_<ULID>`，标准库自实现，字典序即生成时间序）
    - 搭建 pytest 框架与 tests/conftest.py

@@ -1,0 +1,33 @@
+# 构建上下文是仓库根，这里剔掉不该进上下文的东西。
+#
+# 命名不是随意的：上下文根是仓库根，而 .dockerignore 默认只从上下文根读取。
+# BuildKit 支持与 Dockerfile 同名加 .dockerignore 后缀的形式，故放在
+# deploy/ 下也生效，不必往仓库根再塞一个配置文件。
+
+# 本地虚拟环境：几百 MB，且是宿主机平台的产物，进镜像反而有害
+.venv/
+venv/
+
+# 版本库与缓存
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+.eggs/
+
+# 配置：含环境相关内容，运行时挂载而非烤进镜像
+.env
+config/config.yaml
+
+# 与构建无关
+docs/
+tests/
+scripts/
+deploy/
+.claude/
