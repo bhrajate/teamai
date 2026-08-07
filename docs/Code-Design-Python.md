@@ -72,9 +72,23 @@ Status: Draft v1.0
 │       │   ├── monitoring_tool.py
 │       │   └── crm_tool.py
 │       ├── infrastructure/       # 基础设施层（只放实现，抽象在 domain）
-│       │   ├── db.py             # SQLAlchemy async engine/session
-│       │   ├── orm.py            # SQLAlchemy 表定义
-│       │   ├── repositories.py   # 仓储实现（SQL*Repository）
+│       │   ├── db.py             # SQLAlchemy async engine/session + Base
+│       │   ├── orm/              # 表定义按聚合分模块
+│       │   │   ├── task.py       # TaskModel
+│       │   │   ├── channel.py    # ChannelInstanceModel
+│       │   │   ├── memory.py     # MemoryEntryModel + PreferenceModel
+│       │   │   ├── tag.py        # TagTemplateModel
+│       │   │   ├── policy.py     # PolicyModel
+│       │   │   ├── budget.py     # BudgetQuotaModel
+│       │   │   └── audit.py      # AuditLogModel
+│       │   ├── repositories/     # 仓储实现，与 domain/repositories/ 一一对应
+│       │   │   ├── task.py       # SQLTaskRepository + 领域↔表 mapper
+│       │   │   ├── memory.py     # SQLMemoryRepository
+│       │   │   ├── tag.py        # SQLTagRepository
+│       │   │   ├── policy.py     # SQLPolicyRepository（JSON 字段转换）
+│       │   │   ├── budget.py     # SQLBudgetRepository
+│       │   │   ├── channel.py    # SQLChannelRepository
+│       │   │   └── audit.py      # SQLAuditRepository（JSON 字段转换）
 │       │   ├── queue.py          # RedisTaskQueue（TaskQueue 实现）
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
 │       │   └── scheduler.py      # APScheduler 封装
@@ -105,7 +119,8 @@ main → adapters ─┬→ application → agent → tools
 - `domain` 无外部依赖，内部按类型分四个子包：领域模型（`models/`）+ 仓储接口（`repositories/`）+ 外部端口（`ports/`）+ 领域服务（`services/`）。各子包 `__init__.py` 汇总导出，跨层调用方写 `from teamai.domain.models import Task`；`domain` 内部互相引用走具体子模块（如 `teamai.domain.models.task`）以免绕回包级 `__init__`
 - `application` 依赖 domain / agent / tools，**不依赖 infrastructure**——持久化与队列均通过 domain 声明的抽象访问
 - `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
-- `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）
+- `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）。内部布局镜像 domain：`orm/` 与 `repositories/` 都按聚合分模块，一个聚合的表、mapper 与仓储实现路径同名，改字段时三边位置可推测
+- `infrastructure/orm/__init__.py` **必须导入全部表模块**：SQLAlchemy 只在类定义被执行时才把表注册进 `Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表，漏一个 import 对应的表就会静默不创建。此约束由 `tests/unit/test_orm_registry.py` 静态校验
 - `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）
 - `adapters` 最外层，接收已装配好的 Container
 
