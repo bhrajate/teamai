@@ -99,7 +99,7 @@ async def test_socket_mode任务随lifespan启停(monkeypatch: pytest.MonkeyPatc
             closed.set()
 
     monkeypatch.setattr(
-        "teamai.adapters.slack_app.build_socket_mode_handler",
+        "teamai.adapters.slack.build_socket_mode_handler",
         lambda app: FakeHandler(),
     )
 
@@ -135,7 +135,7 @@ async def test_socket_mode关闭异常不阻断退出(monkeypatch: pytest.Monkey
             raise RuntimeError("断连失败（测试注入）")
 
     monkeypatch.setattr(
-        "teamai.adapters.slack_app.build_socket_mode_handler",
+        "teamai.adapters.slack.build_socket_mode_handler",
         lambda app: BrokenHandler(),
     )
 

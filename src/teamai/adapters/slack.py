@@ -10,10 +10,18 @@ Slack 有两条互斥的事件通道：
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from slack_bolt.async_app import AsyncApp
 
 from teamai.application.router import MessageRouter
 from teamai.config import settings
+
+if TYPE_CHECKING:
+    # 两个 handler 的真实导入刻意留在函数内：Socket Mode 与 Events API 是互斥的
+    # 接入方式，各自的 adapter 会拉起不同依赖，按需导入避免用一种时加载另一种。
+    from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 
 def build_slack_app(router: MessageRouter) -> AsyncApp:
@@ -65,7 +73,7 @@ def build_slack_app(router: MessageRouter) -> AsyncApp:
     return app
 
 
-def build_socket_mode_handler(app: AsyncApp):
+def build_socket_mode_handler(app: AsyncApp) -> AsyncSocketModeHandler:
     """构建 Socket Mode 处理器。
 
     调用方用 `await handler.start_async()` 建立长连接（会一直阻塞，需放后台任务），
@@ -76,7 +84,7 @@ def build_socket_mode_handler(app: AsyncApp):
     return AsyncSocketModeHandler(app, settings.slack_app_token)
 
 
-def build_events_handler(app: AsyncApp):
+def build_events_handler(app: AsyncApp) -> AsyncSlackRequestHandler:
     """构建 Events API 处理器，供 FastAPI 路由转发请求。
 
     用法：`await handler.handle(request)`，签名校验由 slack-bolt 内部完成。

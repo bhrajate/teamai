@@ -96,8 +96,16 @@ Status: Draft v1.0
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
 │       │   └── scheduler.py      # APScheduler 封装
 │       ├── adapters/             # 平台适配层
-│       │   ├── slack_app.py      # slack-bolt AsyncApp 装配
-│       │   └── admin_api.py      # FastAPI 路由
+│       │   ├── slack.py         # slack-bolt AsyncApp 装配 + 两种接入方式
+│       │   └── admin/           # Admin API，按资源分模块
+│       │       ├── __init__.py  # build_admin_router：挂 /api 前缀并逐个 include
+│       │       ├── serializers.py # 领域对象 → JSON
+│       │       ├── memory.py    # /channels/{id}/memories、/memories/{id}
+│       │       ├── budget.py    # /channels/{id}/budget
+│       │       ├── policy.py    # /channels/{id}/policy
+│       │       ├── audit.py     # /channels/{id}/audit
+│       │       ├── task.py      # /channels/{id}/tasks
+│       │       └── tag.py       # /channels/{id}/tags
 │       └── util/
 │           └── events.py         # 内部事件/幂等键 + ULID 生成（gen_id）
 └── tests/
@@ -128,7 +136,8 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 - `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）。内部布局镜像 domain：`orm/` 与 `repositories/` 都按聚合分模块，一个聚合的表、mapper 与仓储实现路径同名，改字段时三边位置可推测
 - `infrastructure/orm/__init__.py` **必须导入全部表模块**：SQLAlchemy 只在类定义被执行时才把表注册进 `Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表，漏一个 import 对应的表就会静默不创建。此约束由 `tests/unit/test_orm_registry.py` 静态校验
 - `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）。同时持有进程内共享单例 `get_container()`：容器内含共享 AsyncSession 与 Redis 连接，重复装配会按调用次数放大连接数
-- `adapters` 最外层，接收已装配好的 Container
+- `adapters` 最外层，接收已装配好的 Container。`admin/` 每个资源模块导出一个 `build_*_router(container)`，子路由自身不带前缀、完整路径写在模块内，`/api` 前缀由 `build_admin_router` 统一挂
+- `adapters/admin/__init__.py` **必须 include 全部资源路由**：漏一个该组路由静默不注册，请求时才 404。此约束由 `tests/unit/test_admin_routes.py` 校验（AST 静态检查 + 完整路由表断言）。注意路由表须从 `app.openapi()` 取 —— FastAPI 把 `include_router` 存成惰性对象，遍历 `app.routes` 只能看到 `/api/health`
 
 抽象归属原则：**谁消费、谁定义**。接口放在消费方所在层或其下层，实现放在 infrastructure，从而保证 import 方向与依赖倒置一致。
 
@@ -310,7 +319,7 @@ class MemoryRepository(ABC):
     async def set_preference(self, pref: Preference) -> None: ...
 ```
 
-### 4.6 adapters/slack_app.py — Slack 装配
+### 4.6 adapters/slack.py — Slack 装配
 
 ```python
 from slack_bolt.async_app import AsyncApp

@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request
 
-from teamai.adapters.admin_api import build_admin_router
+from teamai.adapters.admin import build_admin_router
 from teamai.config import settings
 from teamai.container import get_container
 from teamai.infrastructure.db import init_db_or_warn
@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
     slack_app = None
     socket_handler = None
     if settings.slack_enabled:
-        from teamai.adapters.slack_app import build_slack_app
+        from teamai.adapters.slack import build_slack_app
 
         slack_app = build_slack_app(container.router)
 
@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
 
         socket_task: asyncio.Task[None] | None = None
         if slack_app is not None and settings.slack_app_token:
-            from teamai.adapters.slack_app import build_socket_mode_handler
+            from teamai.adapters.slack import build_socket_mode_handler
 
             socket_handler = build_socket_mode_handler(slack_app)
             socket_task = asyncio.create_task(socket_handler.start_async(), name="slack-socket-mode")
@@ -79,7 +79,7 @@ def create_app() -> FastAPI:
 
     # Events API 模式下才需要 HTTP 入口；Socket Mode 走 WS，挂了也收不到事件
     if slack_app is not None and not settings.slack_app_token:
-        from teamai.adapters.slack_app import build_events_handler
+        from teamai.adapters.slack import build_events_handler
 
         events_handler = build_events_handler(slack_app)
 
