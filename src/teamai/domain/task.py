@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TaskStatus(Enum):
@@ -20,14 +20,20 @@ class TaskStatus(Enum):
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
 
-    def can_transit(self, to: "TaskStatus") -> bool:
+    def can_transit(self, to: TaskStatus) -> bool:
         return to in _TRANSITIONS[self]
 
 
 # 合法迁移表（枚举类体内定义的 dict 会被 Enum 当作成员，故放模块级）
 _TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED},
-    TaskStatus.RUNNING: {TaskStatus.WAITING_INPUT, TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.PAUSED},
+    TaskStatus.RUNNING: {
+        TaskStatus.WAITING_INPUT,
+        TaskStatus.DONE,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+        TaskStatus.PAUSED,
+    },
     TaskStatus.WAITING_INPUT: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.PAUSED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.DONE: set(),

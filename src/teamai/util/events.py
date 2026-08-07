@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 def gen_id(prefix: str = "id") -> str:
@@ -20,7 +20,7 @@ class EventIdempotencyKey:
     subtype: str = ""
 
     @classmethod
-    def from_event(cls, event: dict) -> "EventIdempotencyKey":
+    def from_event(cls, event: dict) -> EventIdempotencyKey:
         return cls(
             channel=str(event.get("channel", "")),
             ts=str(event.get("ts", "")),

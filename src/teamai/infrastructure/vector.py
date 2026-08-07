@@ -26,7 +26,7 @@ class _InMemoryVectorStore:
 
     async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]:
         def _cosine(a: list[float], b: list[float]) -> float:
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=True))
             na = sum(x * x for x in a) ** 0.5 or 1.0
             nb = sum(x * x for x in b) ** 0.5 or 1.0
             return dot / (na * nb)

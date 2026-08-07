@@ -34,14 +34,3 @@ class CRMQueryTool(BaseTool):
 
 def build_crm_tool() -> CRMQueryTool:
     return CRMQueryTool()
-
-
-def build_default_registry() -> object:
-    """构建并注册全部默认工具，返回 ToolRegistry。"""
-    from teamai.tools.registry import ToolRegistry
-
-    registry = ToolRegistry()
-    registry.register(build_github_tool())
-    registry.register(build_monitoring_tool())
-    registry.register(build_crm_tool())
-    return registry

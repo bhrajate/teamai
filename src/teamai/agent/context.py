@@ -34,7 +34,7 @@ class ContextBundle:
             lines.append(f"- {entry.content}")
         return "\n".join(lines)
 
-    def compact(self, max_history: int, summary_threshold: int) -> "ContextBundle":
+    def compact(self, max_history: int, summary_threshold: int) -> ContextBundle:
         """上下文压缩：线程历史超阈值时，将最旧部分摘要为一行提示。
 
         返回新 bundle，不修改自身（保持可追溯）。

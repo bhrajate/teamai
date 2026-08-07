@@ -22,7 +22,7 @@ class ModelConfig:
     full: str = "claude-opus-4-8"
 
     @classmethod
-    def from_settings(cls, s: Settings) -> "ModelConfig":
+    def from_settings(cls, s: Settings) -> ModelConfig:
         return cls(
             light_primary=s.model_light_primary,
             light_fallback=s.model_light_fallback,
