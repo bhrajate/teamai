@@ -141,7 +141,17 @@ def test_domain_只依赖自身() -> None:
 
 def test_domain_不导入三方库() -> None:
     """domain 应只用标准库，避免领域模型被外部框架污染。"""
-    allow = {"abc", "dataclasses", "datetime", "enum", "typing", "__future__", "collections", "uuid"}
+    allow = {
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "secrets",
+        "time",
+        "typing",
+        "__future__",
+    }
     bad: list[str] = []
     for path in sorted((SRC / "domain").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))

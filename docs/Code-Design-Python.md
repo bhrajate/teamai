@@ -35,7 +35,7 @@ Status: Draft v1.0
 │       ├── container.py          # 组合根：装配全部依赖 + 进程内共享单例
 │       ├── config.py             # Settings (pydantic-settings)
 │       ├── domain/               # 领域模型与抽象契约（无外部依赖）
-│       │   ├── identity.py      # gen_id：实体 ID 生成（各层共用）
+│       │   ├── identity.py      # gen_id：ULID 实体 ID（各层共用，按时间可排序）
 │       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
 │       │   │   ├── channel.py    # ChannelInstance
 │       │   │   ├── task.py       # Task + TaskStatus 状态机
