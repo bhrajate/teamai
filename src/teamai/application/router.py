@@ -13,8 +13,8 @@ from teamai.application.intent import IntentClassifier
 from teamai.application.memory_service import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.tags import TagResolver
+from teamai.domain.repositories import PolicyRepository
 from teamai.domain.task import TaskStatus
-from teamai.infrastructure.repositories.interface import PolicyRepository
 
 
 @dataclass

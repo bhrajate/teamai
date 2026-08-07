@@ -1,9 +1,13 @@
-"""审计写入组件：面向用例层的便捷封装。"""
+"""审计写入领域服务。
+
+application 与 agent 两层都需要留痕，故放在 domain 层避免两者互相依赖。
+仅依赖 domain 模型与 AuditRepository 抽象，无 I/O。
+"""
 
 from __future__ import annotations
 
 from teamai.domain.audit import AuditAction, AuditLog, AuditResult
-from teamai.infrastructure.repositories.interface import AuditRepository
+from teamai.domain.repositories import AuditRepository
 from teamai.util.events import gen_id
 
 

@@ -41,7 +41,7 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 async def init_db() -> None:
     """创建表结构（生产环境应使用迁移工具，这里为开发便捷直接建表）。"""
-    import teamai.infrastructure.models  # noqa: F401  确保模型已注册
+    import teamai.infrastructure.orm  # noqa: F401  确保模型已注册
 
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

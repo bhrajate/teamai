@@ -14,8 +14,9 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.router import MessageRouter
 from teamai.application.tags import TagResolver
 from teamai.config import settings
-from teamai.infrastructure.audit_log import AuditLogWriter
-from teamai.infrastructure.repositories.interface import (
+from teamai.domain.audit_writer import AuditLogWriter
+from teamai.domain.ports import TaskQueue
+from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
     ChannelRepository,
@@ -24,7 +25,8 @@ from teamai.infrastructure.repositories.interface import (
     TagRepository,
     TaskRepository,
 )
-from teamai.infrastructure.repositories.sqlalchemy import (
+from teamai.infrastructure.queue import RedisTaskQueue
+from teamai.infrastructure.repositories import (
     SQLAuditRepository,
     SQLBudgetRepository,
     SQLChannelRepository,
@@ -49,6 +51,7 @@ class Container:
     budget_repo: BudgetRepository
     channel_repo: ChannelRepository
     audit_repo: AuditRepository
+    queue: TaskQueue
 
     audit: AuditLogWriter
     orchestrator: TaskOrchestrator
@@ -88,8 +91,10 @@ def build_container() -> Container:
     channel_repo = SQLChannelRepository(session)
     audit_repo = SQLAuditRepository(session)
 
+    queue = RedisTaskQueue()
+
     audit = AuditLogWriter(audit_repo)
-    orchestrator = TaskOrchestrator(task_repo, audit)
+    orchestrator = TaskOrchestrator(task_repo, audit, queue)
     budget = BudgetController(budget_repo, audit)
     memory = MemoryService(memory_repo, channel_repo, audit, vector_store=build_vector_store())
     tags = TagResolver(tag_repo, audit)
@@ -119,6 +124,7 @@ def build_container() -> Container:
         budget_repo=budget_repo,
         channel_repo=channel_repo,
         audit_repo=audit_repo,
+        queue=queue,
         audit=audit,
         orchestrator=orchestrator,
         budget=budget,

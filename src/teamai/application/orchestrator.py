@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from teamai.domain.audit import AuditAction
+from teamai.domain.audit_writer import AuditLogWriter
+from teamai.domain.ports import QueuePayload, TaskQueue
+from teamai.domain.repositories import TaskRepository
 from teamai.domain.task import Task, TaskStatus
-from teamai.infrastructure.audit_log import AuditLogWriter
-from teamai.infrastructure.queue import QueuePayload, enqueue_long_task
-from teamai.infrastructure.repositories.interface import TaskRepository
 from teamai.util.events import gen_id
 
 
 class TaskOrchestrator:
-    def __init__(self, repo: TaskRepository, audit: AuditLogWriter, long_task_threshold: int = 3) -> None:
+    def __init__(
+        self,
+        repo: TaskRepository,
+        audit: AuditLogWriter,
+        queue: TaskQueue,
+        long_task_threshold: int = 3,
+    ) -> None:
         self._repo = repo
         self._audit = audit
+        self._queue = queue
         self._long_task_threshold = long_task_threshold
 
     async def create_task(
@@ -77,4 +84,4 @@ class TaskOrchestrator:
             channel_instance_id=task.channel_instance_id,
             model_level=model_level,
         )
-        await enqueue_long_task(payload)
+        await self._queue.enqueue(payload)

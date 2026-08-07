@@ -16,8 +16,8 @@ from teamai.agent.context import ContextBundle
 from teamai.agent.models import ModelRegistry
 from teamai.config import Settings
 from teamai.domain.audit import AuditAction, AuditResult
+from teamai.domain.audit_writer import AuditLogWriter
 from teamai.domain.task import Task
-from teamai.infrastructure.audit_log import AuditLogWriter
 from teamai.tools.base import BaseTool
 from teamai.tools.registry import ToolRegistry
 

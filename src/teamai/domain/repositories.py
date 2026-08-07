@@ -1,4 +1,8 @@
-"""仓储抽象接口（依赖倒置：应用层依赖接口，不依赖具体 DB）。"""
+"""仓储抽象接口。
+
+依赖倒置：由领域层声明持久化契约，infrastructure 层提供实现。
+应用层只 import 本模块，不感知具体 DB。
+"""
 
 from __future__ import annotations
 

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from teamai.domain.audit import AuditAction, AuditResult
+from teamai.domain.audit_writer import AuditLogWriter
 from teamai.domain.budget import BudgetQuota, BudgetState
-from teamai.infrastructure.audit_log import AuditLogWriter
-from teamai.infrastructure.repositories.interface import BudgetRepository
+from teamai.domain.repositories import BudgetRepository
 
 
 class BudgetController:

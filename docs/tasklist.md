@@ -4,7 +4,7 @@
    - 创建 src/teamai/ 分层目录结构（domain/application/agent/tools/infrastructure/adapters）
    - 配置 pyproject.toml、.env.example、docker-compose.yml（postgres + redis + qdrant）
    - 实现 config.py（pydantic-settings：Slack token、Anthropic key、DB/Redis/Qdrant 连接、模型分级映射）
-   - 实现 util/ids.py 与 util/events.py（ULID、事件幂等键 channel+ts+subtype）
+   - 实现 util/events.py（ULID 生成 gen_id、事件幂等键 channel+ts+subtype）
    - 搭建 pytest 框架与 tests/conftest.py
    - 参考 Code-Design-Python.md §1、§2
 
@@ -23,11 +23,11 @@
 
 - [x] 4. 实现基础设施层（DB/仓储/队列/向量/审计）
    - 实现 infrastructure/db.py（SQLAlchemy async engine/session）
-   - 实现 infrastructure/repositories/：TaskRepository、MemoryRepository、TagRepository、PolicyRepository、BudgetRepository、AuditRepository（按 §4.5 仓储接口）
-   - 实现 infrastructure/queue.py（ARQ 队列封装：长任务入队/消费/结果回写）
+   - 实现 infrastructure/repositories.py：TaskRepository、MemoryRepository、TagRepository、PolicyRepository、BudgetRepository、AuditRepository 的 SQL 实现（接口见 domain/repositories.py §4.5）
+   - 实现 infrastructure/queue.py（RedisTaskQueue：长任务入队/消费/结果回写）
    - 实现 infrastructure/vector.py（Qdrant/Chroma 适配器：embedding 写入与语义检索）
    - 实现 infrastructure/scheduler.py（APScheduler：cron 定时任务创建与取消）
-   - 实现 infrastructure/audit_log.py（仅追加审计写入）
+   - 实现 domain/audit_writer.py（仅追加审计写入，领域服务）
    - 参考 Code-Design-Python.md §4.5、§6
 
 - [ ]* 4.1 编写仓储 CRUD 与审计仅追加的集成测试（审计完整性对应正确性属性）

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from teamai.domain.audit import AuditAction
+from teamai.domain.audit_writer import AuditLogWriter
+from teamai.domain.repositories import TagRepository
 from teamai.domain.tag import TagTemplate
-from teamai.infrastructure.audit_log import AuditLogWriter
-from teamai.infrastructure.repositories.interface import TagRepository
 from teamai.util.events import gen_id
 
 

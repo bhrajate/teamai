@@ -15,7 +15,16 @@ from teamai.domain.memory import MemoryEntry, Preference
 from teamai.domain.policy import AmbientRule, PermissionPolicy
 from teamai.domain.tag import TagTemplate
 from teamai.domain.task import Task, TaskStatus
-from teamai.infrastructure.models import (
+from teamai.domain.repositories import (
+    AuditRepository,
+    BudgetRepository,
+    ChannelRepository,
+    MemoryRepository,
+    PolicyRepository,
+    TagRepository,
+    TaskRepository,
+)
+from teamai.infrastructure.orm import (
     AuditLogModel,
     BudgetQuotaModel,
     ChannelInstanceModel,
@@ -24,15 +33,6 @@ from teamai.infrastructure.models import (
     PreferenceModel,
     TagTemplateModel,
     TaskModel,
-)
-from teamai.infrastructure.repositories.interface import (
-    AuditRepository,
-    BudgetRepository,
-    ChannelRepository,
-    MemoryRepository,
-    PolicyRepository,
-    TagRepository,
-    TaskRepository,
 )
 
 

@@ -30,15 +30,19 @@ Status: Draft v1.0
 ├── src/
 │   └── teamai/
 │       ├── main.py               # 入口：Slack app + Admin API + Scheduler
+│       ├── container.py          # 组合根：装配全部依赖
 │       ├── config.py             # Settings (pydantic-settings)
-│       ├── domain/               # 纯领域模型（无外部依赖）
+│       ├── domain/               # 领域模型与抽象契约（无外部依赖）
 │       │   ├── channel.py        # ChannelInstance
 │       │   ├── task.py           # Task + TaskStatus 状态机
 │       │   ├── memory.py         # MemoryEntry / Preference
 │       │   ├── tag.py            # TagTemplate
 │       │   ├── policy.py         # PermissionPolicy / AmbientRule
 │       │   ├── budget.py         # BudgetQuota
-│       │   └── audit.py          # AuditLog
+│       │   ├── audit.py          # AuditLog
+│       │   ├── audit_writer.py   # AuditLogWriter（领域服务，application/agent 共用）
+│       │   ├── repositories.py   # 仓储抽象接口（依赖倒置）
+│       │   └── ports.py          # TaskQueue 等外部系统端口
 │       ├── application/          # 用例层（编排逻辑）
 │       │   ├── router.py         # MessageRouter
 │       │   ├── intent.py         # IntentClassifier
@@ -57,19 +61,18 @@ Status: Draft v1.0
 │       │   ├── github_tool.py    # GitHubConnector
 │       │   ├── monitoring_tool.py
 │       │   └── crm_tool.py
-│       ├── infrastructure/       # 基础设施层
+│       ├── infrastructure/       # 基础设施层（只放实现，抽象在 domain）
 │       │   ├── db.py             # SQLAlchemy async engine/session
-│       │   ├── repositories/     # 仓储实现
-│       │   ├── queue.py          # ARQ 队列封装
+│       │   ├── orm.py            # SQLAlchemy 表定义
+│       │   ├── repositories.py   # 仓储实现（SQL*Repository）
+│       │   ├── queue.py          # RedisTaskQueue（TaskQueue 实现）
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
-│       │   ├── scheduler.py      # APScheduler 封装
-│       │   └── audit_log.py      # 审计写入
+│       │   └── scheduler.py      # APScheduler 封装
 │       ├── adapters/             # 平台适配层
 │       │   ├── slack_app.py      # slack-bolt AsyncApp 装配
 │       │   └── admin_api.py      # FastAPI 路由
 │       └── util/
-│           ├── events.py         # 内部事件/幂等键
-│           └── ids.py            # 雪花/ULID 生成
+│           └── events.py         # 内部事件/幂等键 + ULID 生成（gen_id）
 └── tests/
     ├── conftest.py
     ├── unit/                     # 状态机/预算/鉴权单元测试
@@ -80,16 +83,23 @@ Status: Draft v1.0
 ## 3. 分层依赖规则
 
 ```
-adapters → application → domain
-     ↘          ↘
-     agent  →  tools / infrastructure
+main → adapters ─┬→ application → agent → tools
+                 │        ↓          ↓       ↓
+                 └→ container      domain ←──┘
+                         ↓            ↑
+                   infrastructure ─────┘
 ```
 
-- `domain` 层零依赖，只有 dataclass 与 Enum
-- `application` 依赖 domain + 仓储接口（依赖倒置，不直接依赖具体 DB）
-- `infrastructure` 实现仓储接口，负责 SQLAlchemy/Redis/Qdrant
-- `agent` 依赖 tools + infrastructure（LLM/记忆/审计/预算）
-- `adapters` 最外层，装配所有依赖
+依赖只允许向下，`util` 为叶子模块（零内部依赖），任何层可用。
+
+- `domain` 无外部依赖：领域模型 + 仓储接口（`repositories.py`）+ 外部端口（`ports.py`）+ 审计领域服务（`audit_writer.py`）
+- `application` 依赖 domain / agent / tools，**不依赖 infrastructure**——持久化与队列均通过 domain 声明的抽象访问
+- `agent` 依赖 domain + tools，不依赖 application（避免与 `application/router.py` 形成环）
+- `infrastructure` 只依赖 domain，实现 domain 声明的抽象（`SQL*Repository`、`RedisTaskQueue`）
+- `container.py` 是唯一同时 import application 与 infrastructure 的模块（组合根，负责绑定抽象与实现）
+- `adapters` 最外层，接收已装配好的 Container
+
+抽象归属原则：**谁消费、谁定义**。接口放在消费方所在层或其下层，实现放在 infrastructure，从而保证 import 方向与依赖倒置一致。
 
 ## 4. 核心接口设计
 
@@ -234,7 +244,7 @@ class BaseTool(ABC):
         ...
 ```
 
-### 4.5 infrastructure/repositories — 仓储接口（依赖倒置）
+### 4.5 domain/repositories.py — 仓储接口（依赖倒置）
 
 ```python
 class TaskRepository(ABC):
