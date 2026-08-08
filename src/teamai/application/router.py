@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from teamai.agent.context import ContextBundle
-from teamai.agent.prompts import build_system_prompt
-from teamai.agent.runtime import AgentRuntime, StageResult, StageStatus
+from teamai.application.agent.context import ContextBundle
+from teamai.application.agent.prompts import build_system_prompt
+from teamai.application.agent.runtime import AgentRuntime, StageResult, StageStatus
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
 from teamai.application.intent import IntentClassifier

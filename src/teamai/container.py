@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from teamai.agent.models import ModelConfig, ModelRegistry
-from teamai.agent.runtime import AgentRuntime
+from teamai.application.agent.runtime import AgentRuntime
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
 from teamai.application.intent import IntentClassifier
@@ -30,6 +29,7 @@ from teamai.domain.repositories import (
 )
 from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.dedup import build_event_deduplicator
+from teamai.infrastructure.llm.gateway import ModelConfig, PydanticAIGateway
 from teamai.infrastructure.queue import RedisTaskQueue
 from teamai.infrastructure.redis_client import RedisClientProvider
 from teamai.infrastructure.repositories import (
@@ -41,11 +41,11 @@ from teamai.infrastructure.repositories import (
     SQLTagRepository,
     SQLTaskRepository,
 )
+from teamai.infrastructure.tools.crm_tool import build_crm_tool
+from teamai.infrastructure.tools.github_tool import build_github_tool
+from teamai.infrastructure.tools.monitoring_tool import build_monitoring_tool
+from teamai.infrastructure.tools.registry import ToolRegistry
 from teamai.infrastructure.vector import build_vector_store
-from teamai.tools.crm_tool import build_crm_tool
-from teamai.tools.github_tool import build_github_tool
-from teamai.tools.monitoring_tool import build_monitoring_tool
-from teamai.tools.registry import ToolRegistry
 
 
 @dataclass
@@ -121,9 +121,8 @@ def build_container() -> Container:
     channels = ChannelService(channel_repo, policy_repo)
 
     tools = build_tools()
-    model_config = ModelConfig.from_settings(settings)
-    registry = ModelRegistry(model_config)
-    runtime = AgentRuntime(registry, tools, budget, audit, settings)
+    gateway = PydanticAIGateway(ModelConfig.from_settings(settings))
+    runtime = AgentRuntime(gateway, tools, budget, audit, settings)
     intent = IntentClassifier()
     router = MessageRouter(
         orchestrator=orchestrator,

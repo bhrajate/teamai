@@ -21,16 +21,17 @@ ALLOWED: dict[str, set[str]] = {
     "__init__": set(),
     "domain": {"domain"},
     "config": {"config"},
-    "tools": {"domain", "tools", "config"},
-    "agent": {"domain", "tools", "agent", "config"},
-    "application": {"domain", "application", "agent", "tools", "config"},
+    "application": {"domain", "application", "config"},
     "infrastructure": {"domain", "infrastructure", "config"},
-    "container": {"domain", "application", "agent", "tools", "infrastructure", "config", "container"},
-    "adapters": {
-        "domain", "application", "agent", "tools", "infrastructure",
-        "adapters", "config", "container",
-    },
+    "container": {"domain", "application", "infrastructure", "config", "container"},
+    "adapters": {"domain", "application", "infrastructure", "adapters", "config", "container"},
 }
+
+# 曾经存在的 agent/ 与 tools/ 两层已撤销：策略（runtime/context/prompts）上移进
+# application，SDK 相关实现（pydantic-ai gateway、工具连接器）下沉进 infrastructure。
+# 它们原先横在 domain 与 application 之间，导致 application 间接依赖具体 LLM SDK，
+# 且 agent 层够不着 application 的 BudgetController，只能手写 duck-typed 端口。
+REMOVED_LAYERS = {"agent", "tools"}
 
 # 进程入口在包外的 app/ 目录（app.backend / app.worker），可依赖 teamai 全部层，
 # 故不列入 ALLOWED；方向由 test_src不依赖进程入口 单向锁死。
@@ -122,6 +123,29 @@ def test_application_不依赖_infrastructure() -> None:
         "application 层不得依赖 infrastructure（持久化与队列须走 domain 抽象）:\n  "
         + "\n  ".join(bad)
     )
+
+
+def test_已撤销的层没有复活() -> None:
+    """agent/ 与 tools/ 撤销后不应重新出现，否则 SDK 又会横在 application 之下。"""
+    revived = sorted(p.name for p in SRC.iterdir() if p.is_dir() and p.name in REMOVED_LAYERS)
+    assert not revived, f"已撤销的层重新出现: {revived}"
+
+
+def test_LLM_SDK_只出现在infrastructure() -> None:
+    """pydantic-ai 是外部 SDK，须锁在 infrastructure 层。
+
+    application 只能经 domain.ports 的 LLMGateway / ToolProvider 使用它 ——
+    否则用例层的状态机会被 SDK 的异常类型与工具对象绑死，router 也测不动。
+    """
+    bad: list[str] = []
+    for path in _py_files():
+        rel = path.relative_to(SRC)
+        if _layer(rel) == "infrastructure":
+            continue
+        for lineno, mod in _imported_roots(path):
+            if mod.split(".")[0] == "pydantic_ai":
+                bad.append(f"{rel}:{lineno} {mod}")
+    assert not bad, "pydantic-ai 只允许在 infrastructure 层出现:\n  " + "\n  ".join(bad)
 
 
 def test_domain_只依赖自身() -> None:

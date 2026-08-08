@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from teamai.domain.models import AuditLog, Task, TaskStatus
+from teamai.domain.models import AuditLog, BudgetQuota, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
-from teamai.domain.repositories import AuditRepository, TaskRepository
+from teamai.domain.repositories import AuditRepository, BudgetRepository, TaskRepository
 
 
 class FakeTaskQueue(TaskQueue):
@@ -48,6 +48,19 @@ class FakeTaskRepository(TaskRepository):
         if status is not None:
             out = [t for t in out if t.status is status]
         return out
+
+
+class FakeBudgetRepository(BudgetRepository):
+    def __init__(self, quota: BudgetQuota | None = None) -> None:
+        self.quota = quota
+        self.upserts = 0
+
+    async def get_for_channel(self, channel_instance_id: str) -> BudgetQuota | None:
+        return self.quota
+
+    async def upsert(self, quota: BudgetQuota) -> None:
+        self.upserts += 1
+        self.quota = quota
 
 
 class FakeAuditRepository(AuditRepository):
