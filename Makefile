@@ -20,7 +20,7 @@ COMPOSE    := docker compose --env-file .env --project-directory . -f deploy/doc
 IMAGE      ?= teamai:latest
 
 # 目标名与同名目录/文件冲突时（如 config、tests），make 会以为已是最新而跳过
-.PHONY: help install lock sync lint fmt test test-cov check run-web run-worker \
+.PHONY: help install lock sync lint fmt test test-cov check run-web run-worker migrate \
         up down restart logs ps build image-run clean config
 
 .DEFAULT_GOAL := help
@@ -72,6 +72,9 @@ run-web:  ## 起 web 进程（Admin API + Slack 入口）
 
 run-worker:  ## 起 worker 进程（消费队列 + 定时调度）
 	$(PY) -m app.worker.main
+
+migrate:  ## 应用数据库迁移（alembic upgrade head，生产建库路径）
+	$(UV) run alembic upgrade head
 
 # ---------- 依赖服务 ----------
 

@@ -19,7 +19,8 @@ class AuditLogModel(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     channel_instance_id: Mapped[str] = mapped_column(String(32), index=True)
-    user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 飞书 user_id（ou_+32hex）超旧宽度，加宽
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     action: Mapped[AuditAction] = mapped_column(Enum(AuditAction))
     detail: Mapped[str] = mapped_column(Text, default="{}")
     task_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)

@@ -104,4 +104,13 @@
 
 - [ ]* 13.1 编写 E2E 评测集加载与指标统计工具
 
-- [ ] 14. 检查点 - 全量测试通过并汇报整体实施结果
+- [x] 14. 多平台接入（参考 Design-multi-platform.md）
+   - 平台无关化：domain/ports/messaging.py（MessagePublisher/ReplyTarget）、application/events.py（IncomingMessage）、ChannelRepository.get_by_platform_channel 补 platform 条件、Task/ORM 的 thread_ts→thread_ref 与 ID 列加宽、channel_instances 复合唯一约束
+   - adapters/slack 拆子包（app.py + translator.py），dedup 键加 slack: 前缀
+   - infrastructure/messaging/：SlackPublisher + FeishuPublisher + PublisherRegistry（worker 回帖 TODO 落地）
+   - adapters/base.py PlatformConnector + 进程入口遍历连接器 + platforms.slack.mode
+   - adapters/feishu/：crypto（AES+验签）、translator（content JSON/mentions/p2p）、callback（FastAPI 路由）、ws（独立线程+跨 loop 桥接）、connector（模式选择 + bot open_id 拉取）
+   - 引入 alembic（async 模板，baseline 迁移与 create_all 无漂移），Makefile migrate 目标，镜像启动先跑迁移
+   - 测试：crypto/translator/callback/ws 单测、test_app 矩阵（两平台 × 两模式 × 凭据）、layering 平台 SDK 锁定、worker 双平台回帖
+
+- [ ] 15. 检查点 - 全量测试通过并汇报整体实施结果

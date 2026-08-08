@@ -43,6 +43,17 @@ admin_api:
   host: 0.0.0.0
   port: 8000
 
+# 平台接入方式。auto 保持旧行为：配了 SLACK_APP_TOKEN 走 Socket Mode，
+# 否则走 Events API（需公网可达的回调 URL）。
+platforms:
+  slack:
+    mode: auto  # auto | events | socket
+  feishu:
+    # auto：配了 FEISHU_ENCRYPT_KEY + FEISHU_VERIFICATION_TOKEN 走 callback
+    # （HTTP 回调，需公网可达的回调 URL），否则走 ws（长连接，无需公网入口）
+    mode: auto  # auto | callback | ws
+    domain: feishu  # feishu | lark（国际版 open.larksuite.com）
+
 # 上下文压缩：超过 max_messages 条后按最近优先裁剪，
 # 超过 summary_threshold 条则把更早的历史摘要化，防止上下文溢出。
 context:

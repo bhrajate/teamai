@@ -46,8 +46,17 @@ class SQLChannelRepository(ChannelRepository):
         m = await self._session.get(ChannelInstanceModel, channel_instance_id)
         return _model_to_channel(m) if m else None
 
-    async def get_by_slack(self, channel_id: str, workspace_id: str) -> ChannelInstance | None:
+    async def get_by_platform_channel(
+        self, platform: str, channel_id: str, workspace_id: str
+    ) -> ChannelInstance | None:
+        """按平台 + 频道 + 工作区精确查。
+
+        platform 必须入条件：两平台的 channel_id 空间彼此独立，不带 platform
+        会跨平台撞车（Slack 的 C123 与飞书的 oc_xxx 本不相干，但若某天两个
+        平台出现了相同的 id 字符串，就会误命中对方的实例）。
+        """
         stmt = select(ChannelInstanceModel).where(
+            ChannelInstanceModel.platform == platform,
             ChannelInstanceModel.channel_id == channel_id,
             ChannelInstanceModel.workspace_id == workspace_id,
         )

@@ -14,7 +14,7 @@ def _task_to_model(task: Task) -> TaskModel:
     return TaskModel(
         id=task.id,
         channel_instance_id=task.channel_instance_id,
-        thread_ts=task.thread_ts,
+        thread_ref=task.thread_ref,
         requester_id=task.requester_id,
         intent=task.intent,
         tag_name=task.tag_name,
@@ -32,7 +32,7 @@ def _model_to_task(m: TaskModel) -> Task:
     return Task(
         id=m.id,
         channel_instance_id=m.channel_instance_id,
-        thread_ts=m.thread_ts,
+        thread_ref=m.thread_ref,
         requester_id=m.requester_id,
         intent=m.intent,
         tag_name=m.tag_name,

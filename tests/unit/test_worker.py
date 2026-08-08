@@ -14,8 +14,8 @@ import pytest
 from app.worker.main import handle_payload, run_worker
 from teamai.application.router import RoutingDecision
 from teamai.domain.models import ChannelInstance, Task, TaskStatus
-from teamai.domain.ports import QueuePayload
-from tests.fakes import FakeTaskQueue, FakeTaskRepository
+from teamai.domain.ports import QueuePayload, ReplyTarget
+from tests.fakes import FakeMessagePublisher, FakeTaskQueue, FakeTaskRepository
 
 
 class FakeChannels:
@@ -55,7 +55,7 @@ def _task(status: TaskStatus = TaskStatus.PENDING, **kw) -> Task:
     task = Task(
         id=kw.get("id", "task_1"),
         channel_instance_id=kw.get("channel_instance_id", "ch_1"),
-        thread_ts="1.0",
+        thread_ref="1.0",
         requester_id="U1",
         intent="qa",
         tag_name=kw.get("tag_name"),
@@ -70,7 +70,9 @@ def _instance() -> ChannelInstance:
     )
 
 
-def _container(task: Task | None, instance: ChannelInstance | None, router: FakeRouter) -> SimpleNamespace:
+def _container(
+    task: Task | None, instance: ChannelInstance | None, router: FakeRouter
+) -> SimpleNamespace:
     repo = FakeTaskRepository()
     if task is not None:
         repo.items[task.id] = task
@@ -80,6 +82,7 @@ def _container(task: Task | None, instance: ChannelInstance | None, router: Fake
         orchestrator=FakeOrchestrator(),
         router=router,
         queue=FakeTaskQueue(),
+        publisher=FakeMessagePublisher(),
     )
 
 
@@ -90,7 +93,7 @@ def _payload(**kw) -> QueuePayload:
         model_level=kw.get("model_level", "light"),
         prompt=kw.get("prompt", "帮我看下这段代码"),
         tag_name=kw.get("tag_name"),
-        thread_ts=kw.get("thread_ts", "1.0"),
+        thread_ref=kw.get("thread_ref", "1.0"),
     )
 
 
@@ -170,6 +173,45 @@ async def test_prompt为空时回退到intent() -> None:
     await handle_payload(c, _payload(prompt=""))
 
     assert router.calls[0][1] == "qa"
+
+
+async def test_长任务完成后经publisher回帖() -> None:
+    """异步链路与同步链路共用 MessagePublisher 端口回帖。
+
+    ReplyTarget 由 instance（platform + channel_id）与 task.thread_ref 拼出，
+    队列载荷不再需要额外携带平台信息。
+    """
+    task = _task()
+    router = FakeRouter()
+    c = _container(task, _instance(), router)
+
+    await handle_payload(c, _payload())
+
+    expected = ReplyTarget(platform="slack", channel_id="C1", thread_ref="1.0")
+    assert c.publisher.replies == [(expected, "完成")]
+
+
+async def test_飞书平台回帖按instance平台分发() -> None:
+    """飞书实例回帖同样经 publisher 端口，目标由 instance + task 拼出。"""
+    feishu_instance = ChannelInstance(
+        id="ch_2", platform="feishu", channel_id="oc_1", workspace_id="t_1", agent_identity="ai_2"
+    )
+    router = FakeRouter()
+    c = _container(_task(), feishu_instance, router)
+
+    await handle_payload(c, _payload())
+
+    expected = ReplyTarget(platform="feishu", channel_id="oc_1", thread_ref="1.0")
+    assert c.publisher.replies == [(expected, "完成")]
+
+
+async def test_decision无文案时不回帖() -> None:
+    router = FakeRouter(decision=RoutingDecision(handler="respond", message=""))
+    c = _container(_task(), _instance(), router)
+
+    await handle_payload(c, _payload())
+
+    assert c.publisher.replies == []
 
 
 async def test_消费循环_取空队列后可被stop打断() -> None:

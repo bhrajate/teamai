@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     slack_app_token: str = ""
 
+    # 飞书（app_id + app_secret 两种模式都要；encrypt_key / verification_token
+    # 仅 callback 模式需要，只影响 mode 推断）
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_encrypt_key: str = ""
+    feishu_verification_token: str = ""
+
     # LLM 凭据
     anthropic_api_key: str = ""
 
@@ -104,6 +111,15 @@ class Settings(BaseSettings):
     context_max_messages: int = 60
     context_summary_threshold: int = 120
 
+    # platforms.*
+    # auto 保持旧行为：配了 slack_app_token 走 Socket Mode，否则 Events API
+    platforms_slack_mode: Literal["auto", "events", "socket"] = "auto"
+    # feishu: auto 按凭据推断（配了 encrypt_key + verification_token 走
+    # callback，否则走 ws 长连接）；显式 callback / ws 覆盖推断
+    platforms_feishu_mode: Literal["auto", "callback", "ws"] = "auto"
+    # feishu | lark（国际版 open.larksuite.com）
+    platforms_feishu_domain: Literal["feishu", "lark"] = "feishu"
+
     @property
     def slack_enabled(self) -> bool:
         """Slack 凭据是否齐备。缺任一项则只跑 Admin API，不接入 Slack。
@@ -112,6 +128,15 @@ class Settings(BaseSettings):
         没配走 Events API），不决定是否接入。
         """
         return bool(self.slack_bot_token and self.slack_signing_secret)
+
+    @property
+    def feishu_enabled(self) -> bool:
+        """飞书凭据是否齐备。只看 app_id + app_secret：两种模式都要。
+
+        encrypt_key / verification_token 只影响 mode 推断，与 slack_enabled
+        不把 slack_app_token 计入是同一思路。
+        """
+        return bool(self.feishu_app_id and self.feishu_app_secret)
 
     @classmethod
     def settings_customise_sources(

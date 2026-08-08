@@ -36,7 +36,7 @@ def make_task(status: TaskStatus = TaskStatus.PENDING) -> Task:
     t = Task(
         id="task_1",
         channel_instance_id="ch1",
-        thread_ts="1700000000.1",
+        thread_ref="1700000000.1",
         requester_id="u1",
         intent="review",
     )

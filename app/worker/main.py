@@ -18,7 +18,7 @@ import signal
 
 from teamai.container import Container, build_container
 from teamai.domain.models import TaskStatus
-from teamai.domain.ports import QueuePayload
+from teamai.domain.ports import QueuePayload, ReplyTarget
 from teamai.infrastructure.db import init_db_or_warn
 
 logger = logging.getLogger(__name__)
@@ -60,8 +60,18 @@ async def handle_payload(container: Container, payload: QueuePayload) -> None:
             actor=actor,
         )
         logger.info(f"任务完成 {task.id}: {task.status.value}")
-        # TODO 回写 Slack 线程需要 bot client，当前 worker 无 Slack 依赖，
-        # 结果先落审计与任务状态，回帖待补。
+        if decision.message:
+            # 回帖经 MessagePublisher 端口，按 instance.platform 分发到对应平台。
+            # worker 不再需要具体平台依赖 —— ReplyTarget 由 instance + task 拼出。
+            target = ReplyTarget(
+                platform=instance.platform,
+                channel_id=instance.channel_id,
+                thread_ref=task.thread_ref,
+            )
+            try:
+                await container.publisher.reply(target, decision.message)
+            except ConnectionError as exc:
+                logger.warning(f"任务 {task.id} 回复发送失败: {exc}")
         logger.debug(f"任务 {task.id} 输出: {decision.message[:200]}")
     except Exception as exc:
         logger.error(f"任务执行异常 {task.id}: {exc}")

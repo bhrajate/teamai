@@ -92,7 +92,7 @@ def _bundle(allowed: list[str], *, history: list[str] | None = None) -> ContextB
 
 
 def _task() -> Task:
-    return Task(id="t1", channel_instance_id="ch1", thread_ts="ts1", requester_id="u1", intent="ask")
+    return Task(id="t1", channel_instance_id="ch1", thread_ref="ts1", requester_id="u1", intent="ask")
 
 
 @pytest.fixture

@@ -18,7 +18,7 @@ class QueuePayload:
     # 故由队列载荷携带。默认空串保证旧消息仍能反序列化。
     prompt: str = ""
     tag_name: str | None = None
-    thread_ts: str = ""
+    thread_ref: str = ""  # 线程根引用，回复时定位目标线程
 
 
 class TaskQueue(ABC):

@@ -17,7 +17,7 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.router import MessageRouter
 from teamai.application.tag import TagResolver
 from teamai.config import settings
-from teamai.domain.ports import EventDeduplicator, TaskQueue
+from teamai.domain.ports import EventDeduplicator, MessagePublisher, TaskQueue
 from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
@@ -30,6 +30,7 @@ from teamai.domain.repositories import (
 from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.dedup import build_event_deduplicator
 from teamai.infrastructure.llm.gateway import ModelConfig, PydanticAIGateway
+from teamai.infrastructure.messaging import FeishuPublisher, PublisherRegistry, SlackPublisher
 from teamai.infrastructure.queue import RedisTaskQueue
 from teamai.infrastructure.redis_client import RedisClientProvider
 from teamai.infrastructure.repositories import (
@@ -59,6 +60,8 @@ class Container:
     audit_repo: AuditRepository
     queue: TaskQueue
     dedup: EventDeduplicator
+    # 出向消息：按平台分发，同步与异步链路共用
+    publisher: MessagePublisher
     # 唯一持有的具体基础设施类型，为的是退出时能关掉共享连接池
     redis: RedisClientProvider
 
@@ -79,6 +82,9 @@ class Container:
         否则退出时留下未关闭的 socket 并打出警告。
         """
         await self.redis.aclose()
+        # publisher 字段按 MessagePublisher 端口声明，实际持有的是实现了
+        # aclose 的 PublisherRegistry；容器是组合根，允许持有该具体类型。
+        await self.publisher.aclose()  # type: ignore[attr-defined]
 
 
 def build_tools() -> ToolRegistry:
@@ -113,6 +119,14 @@ def build_container() -> Container:
     queue = RedisTaskQueue(redis)
     dedup = build_event_deduplicator(redis)
 
+    # 出向消息按平台注册。凭据齐备才注册对应 publisher，
+    # 未启用的平台在 registry 里缺失，worker 回帖时记 warning 丢弃。
+    publisher = PublisherRegistry()
+    if settings.slack_enabled:
+        publisher.register("slack", SlackPublisher())
+    if settings.feishu_enabled:
+        publisher.register("feishu", FeishuPublisher())
+
     audit = AuditLogWriter(audit_repo)
     orchestrator = TaskOrchestrator(task_repo, audit, queue)
     budget = BudgetController(budget_repo, audit)
@@ -145,6 +159,7 @@ def build_container() -> Container:
         audit_repo=audit_repo,
         queue=queue,
         dedup=dedup,
+        publisher=publisher,
         redis=redis,
         audit=audit,
         orchestrator=orchestrator,

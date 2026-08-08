@@ -13,7 +13,7 @@ class ChannelService:
         self._policy_repo = policy_repo
 
     async def get_or_create(self, platform: str, channel_id: str, workspace_id: str) -> ChannelInstance:
-        instance = await self._channel_repo.get_by_slack(channel_id, workspace_id)
+        instance = await self._channel_repo.get_by_platform_channel(platform, channel_id, workspace_id)
         if instance is not None:
             return instance
         instance = ChannelInstance(

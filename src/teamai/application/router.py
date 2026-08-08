@@ -9,6 +9,7 @@ from teamai.application.agent.prompts import build_system_prompt
 from teamai.application.agent.runtime import AgentRuntime, StageResult, StageStatus
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
+from teamai.application.events import IncomingMessage
 from teamai.application.intent import IntentClassifier
 from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
@@ -44,31 +45,21 @@ class MessageRouter:
         self._channels = channels
         self._policy_repo = policy_repo
 
-    async def route(
-        self,
-        platform: str,
-        workspace_id: str,
-        channel_id: str,
-        thread_ts: str,
-        user_id: str,
-        text: str,
-        *,
-        is_mention: bool,
-    ) -> RoutingDecision:
-        instance = await self._channels.get_or_create(platform, channel_id, workspace_id)
+    async def route(self, msg: IncomingMessage) -> RoutingDecision:
+        instance = await self._channels.get_or_create(msg.platform, msg.channel_id, msg.workspace_id)
 
-        if not is_mention:
+        if not msg.is_mention:
             # 普通消息：作为频道上下文素材（Ambient 模式下会用于记忆学习）
-            if text.strip() and not text.startswith("/"):
-                await self._memory.store(instance.id, text[:500], source_user_id=user_id)
+            if msg.text.strip() and not msg.text.startswith("/"):
+                await self._memory.store(instance.id, msg.text[:500], source_user_id=msg.user_id)
             return RoutingDecision(handler="observe", message="已记录频道上下文")
 
-        return await self._handle_task(instance, thread_ts, user_id, text)
+        return await self._handle_task(instance, msg.thread_ref, msg.user_id, msg.text)
 
     async def _handle_task(
         self,
         instance: ChannelInstance,
-        thread_ts: str,
+        thread_ref: str,
         user_id: str,
         text: str,
     ) -> RoutingDecision:
@@ -88,7 +79,7 @@ class MessageRouter:
 
         task = await self._orchestrator.create_task(
             channel_instance_id,
-            thread_ts,
+            thread_ref,
             user_id,
             intent.kind,
             tag_name=tag_name,

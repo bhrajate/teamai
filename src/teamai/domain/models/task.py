@@ -53,7 +53,7 @@ class InvalidTransition(Exception):
 class Task:
     id: str
     channel_instance_id: str
-    thread_ts: str
+    thread_ref: str  # 线程根引用：slack 装 thread_ts，飞书装根消息 message_id
     requester_id: str
     intent: str
     tag_name: str | None = None

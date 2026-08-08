@@ -11,8 +11,10 @@ Status: Draft v1.0
 | 语言 | Python 3.11+ | asyncio 原生异步，AI Agent 生态成熟 |
 | Web 框架 | FastAPI | Admin API 与健康检查，异步优先 |
 | Slack 集成 | slack-bolt (AsyncApp) | 官方 SDK，事件驱动 + Socket Mode |
+| 飞书集成 | lark-oapi + cryptography | 官方 SDK（长连接/消息回复），回调加解密自行实现（见 adapters/feishu/crypto.py） |
 | LLM 客户端 | pydantic-ai v2（内置 AnthropicModel + UsageLimits + Agent.tool） | 原生 async、工具调用、预算管控、结构化输出开箱即用 |
 | 数据库 | PostgreSQL + SQLAlchemy 2.0 (async) | 任务/实例/审计持久化 |
+| 迁移 | alembic（async 模板） | 生产建库走 `alembic upgrade head`；开发建表保留 `create_all` |
 | 向量库 | Qdrant（本地开发用 Chroma） | 频道记忆语义检索 |
 | 任务队列 | Redis list（RedisTaskQueue）+ APScheduler | 异步长任务与定时任务。未引入 ARQ：队列语义只需 rpush/lpop，自实现即可，少一个依赖 |
 | 调度 | APScheduler（cron 语义） | 定时/周期任务 |
@@ -32,10 +34,14 @@ Status: Draft v1.0
 │   ├── Dockerfile                # web/worker 共用一份镜像，靠启动命令区分
 │   ├── Dockerfile.dockerignore   # 上下文忽略规则（放这里也生效，见 §3.3）
 │   └── docker-compose.yml        # 本地依赖：postgres + redis + qdrant
+├── alembic.ini                   # alembic 配置（URL 走 settings，见 migrations/env.py）
+├── migrations/                   # 数据库迁移（async 模板）
+│   ├── env.py                    # 接 Base.metadata + settings.database_url
+│   └── versions/                 # 迁移文件（自动生成，不 lint）
 ├── docs/                         # PRD / 设计 / 实施文档
 ├── app/                          # 进程入口（一个子包一个进程，只做装配与启动）
-│   ├── backend/main.py           # web 进程：create_app() ASGI 装配 + uvicorn 启动
-│   └── worker/main.py            # worker 进程：队列消费循环 + Scheduler 生命周期
+│   ├── backend/main.py           # web 进程：create_app() 遍历连接器装配 + uvicorn 启动
+│   └── worker/main.py            # worker 进程：队列消费循环 + Scheduler 生命周期 + 回帖
 ├── src/
 │   └── teamai/
 │       ├── container.py          # 组合根：装配全部依赖 + 进程内共享单例
@@ -60,11 +66,13 @@ Status: Draft v1.0
 │       │   │   └── audit.py      # AuditRepository
 │       │   ├── ports/            # 外部系统端口
 │       │   │   ├── queue.py      # TaskQueue / QueuePayload
-│       │   │   └── dedup.py      # EventDeduplicator（Slack 事件去重）
+│       │   │   ├── dedup.py      # EventDeduplicator（事件去重）
+│       │   │   └── messaging.py  # MessagePublisher / ReplyTarget（出向消息）
 │       │   └── services/         # 领域服务
 │       │       └── audit_writer.py  # AuditLogWriter（application/agent 共用）
 │       ├── application/          # 用例层（编排逻辑）
-│       │   ├── router.py         # MessageRouter（唯一协调者，组合下列用例）
+│       │   ├── events.py         # IncomingMessage（平台无关规范入向事件）
+│       │   ├── router.py         # MessageRouter（唯一协调者，route(msg) 收 IncomingMessage）
 │       │   ├── orchestrator.py   # TaskOrchestrator
 │       │   ├── intent.py         # IntentClassifier + Intent（含意图→模型档位）
 │       │   ├── channel.py        # ChannelService
@@ -104,9 +112,24 @@ Status: Draft v1.0
 │       │   ├── queue.py          # RedisTaskQueue（TaskQueue 实现）
 │       │   ├── dedup.py          # RedisEventDeduplicator（SET NX EX，内存兜底）
 │       │   ├── vector.py         # Qdrant/Chroma 适配器
+│       │   ├── messaging/        # 出向消息发送（MessagePublisher 实现），按平台分模块
+│       │   │   ├── registry.py   # PublisherRegistry：按 target.platform 分发
+│       │   │   ├── slack.py      # SlackPublisher（slack_sdk AsyncWebClient）
+│       │   │   └── feishu.py     # FeishuPublisher（lark areply）
 │       │   └── scheduler.py      # APScheduler 封装
-│       ├── adapters/             # 平台适配层
-│       │   ├── slack.py         # slack-bolt AsyncApp 装配 + 两种接入方式
+│       ├── adapters/             # 平台适配层（入向翻译 + 连接器）
+│       │   ├── base.py           # PlatformConnector 抽象：mount/startup/shutdown
+│       │   ├── slack/            # Slack 适配子包
+│       │   │   ├── __init__.py   # build_connector()（凭据不全返回 None）
+│       │   │   ├── app.py        # AsyncApp 装配 + SlackConnector（Events API / Socket Mode）
+│       │   │   └── translator.py # event → IncomingMessage + dedup_key
+│       │   ├── feishu/           # 飞书适配子包
+│       │   │   ├── __init__.py   # build_connector()
+│       │   │   ├── connector.py  # FeishuConnector：模式选择 + bot open_id 拉取
+│       │   │   ├── callback.py   # HTTP 回调：解密/验签/challenge/去重/派发
+│       │   │   ├── ws.py         # 长连接：独立线程 + 跨 loop fire-and-forget 桥接
+│       │   │   ├── crypto.py     # AES 解密 + 签名校验（SDK 逻辑的 async 拆出）
+│       │   │   └── translator.py # im.message.receive_v1 → IncomingMessage
 │       │   └── admin/           # Admin API，按资源分模块
 │       │       ├── __init__.py  # build_admin_router：挂 /api 前缀并逐个 include
 │       │       ├── serializers.py # 领域对象 → JSON
@@ -154,8 +177,8 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 
 | 进程 | 启动 | 职责 |
 |------|------|------|
-| web | `python -m app.backend.main`，或 `uvicorn app.backend.main:create_app --factory` | Admin API + Slack 事件入口（Socket Mode 或 Events API 二选一，由 `slack_app_token` 是否配置决定） |
-| worker | `python -m app.worker.main` | 消费长任务队列 + APScheduler 定时调度 |
+| web | `python -m app.backend.main`，或 `uvicorn app.backend.main:create_app --factory` | Admin API + 各平台连接器（遍历 CONNECTOR_BUILDERS；Slack 二选一、飞书回调/长连接二选一，由 platforms.* 配置决定） |
+| worker | `python -m app.worker.main` | 消费长任务队列 + APScheduler 定时调度 + 结果经 MessagePublisher 回帖 |
 
 拆两个进程的理由：长任务是小时/天级，与 Slack 事件的毫秒级响应放同一进程会互相拖累——长任务卡住事件循环会让 Slack 事件超时重投，而 web 按 QPS 扩容也会把 worker 副本一并放大、导致同一任务被多次执行。
 
@@ -167,8 +190,8 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 
 | 文件 | 装什么 | 例子 |
 | --- | --- | --- |
-| `.env` | 凭据与连接串 | `SLACK_BOT_TOKEN`、`ANTHROPIC_API_KEY`、`DATABASE_URL`、`REDIS_URL`、`QDRANT_URL` |
-| `config/config.yaml` | 非敏感可调项 | `model.*`、`queue.name`、`event_dedup.ttl_seconds`、`qdrant.collection`、`budget.period`、`admin_api.*`、`context.*` |
+| `.env` | 凭据与连接串 | `SLACK_BOT_TOKEN`、`FEISHU_APP_ID`/`FEISHU_APP_SECRET`、`ANTHROPIC_API_KEY`、`DATABASE_URL`、`REDIS_URL`、`QDRANT_URL` |
+| `config/config.yaml` | 非敏感可调项 | `model.*`、`queue.name`、`event_dedup.ttl_seconds`、`qdrant.collection`、`budget.period`、`admin_api.*`、`context.*`、`platforms.*` |
 
 优先级 **环境变量 > `.env` > `config/config.yaml` > 字段默认值**（`src/teamai/config.py`）。两个文件缺失或留空都不报错，直接回落默认值 —— 新克隆下来不配任何东西也能跑起来。
 
@@ -343,23 +366,40 @@ class MemoryRepository(ABC):
     async def set_preference(self, pref: Preference) -> None: ...
 ```
 
-### 4.6 adapters/slack.py — Slack 装配
+### 4.6 adapters/ — 平台适配与连接器
+
+入方向：各平台 translator 把 webhook 事件归一成 `IncomingMessage`（`application/events.py`），
+`router.route(msg)` 之后不再感知平台。出方向：经 `MessagePublisher` 端口由
+`PublisherRegistry` 按 `target.platform` 分发，同步（web 直回）与异步（worker 回帖）
+两条链路共用。
+
+进程入口只认识 `PlatformConnector`（`adapters/base.py`），`CONNECTOR_BUILDERS`
+里登记的 `build_connector(container)` 凭据不全返回 `None`：
 
 ```python
-from slack_bolt.async_app import AsyncApp
+# app/backend/main.py
+connectors = [c for b in CONNECTOR_BUILDERS if (c := b(container)) is not None]
 
-app = AsyncApp(token=..., signing_secret=...)
+@asynccontextmanager
+async def lifespan(app):
+    await init_db_or_warn()
+    for c in connectors:
+        await c.startup()
+    try:
+        yield
+    finally:
+        for c in reversed(connectors):
+            await c.shutdown()
+        await container.aclose()
 
-@app.event("app_mention")
-async def on_mention(event, say, thread_ts, logger):
-    internal = adapt_event(event)
-    await router.route(internal)      # 分派到用例层
-
-@app.message()
-async def on_message(event, say, logger):
-    # 非 @ 消息：作为频道上下文/记忆素材（Ambient 模式）
-    await router.observe(internal)
+for c in connectors:
+    c.mount(app)   # HTTP 回调模式挂路由；长连接模式为 no-op
 ```
+
+Slack 侧 handler 的同步回复仍走 slack-bolt 的 `say()`（少一次往返）；飞书回调与
+长连接均经 `FeishuConnector.dispatch()`（route + 按 `is_mention` 条件回复），
+长连接模式的 handler 是 SDK 同步回调，只能 fire-and-forget 投递到主 loop
+（`adapters/feishu/ws.py`）。
 
 ## 5. 关键数据流
 
@@ -454,7 +494,7 @@ make run-web   # 另开一个终端起 worker：make run-worker
 
 ### 8.1 镜像
 
-`deploy/Dockerfile` 一份镜像同时供 web 与 worker，靠启动命令区分（默认 `python -m app.backend.main`，worker 传 `python -m app.worker.main`）。多阶段构建：uv 镜像装依赖，运行阶段只留 `python:3.11-slim` + venv，非 root 运行。
+`deploy/Dockerfile` 一份镜像同时供 web 与 worker，靠启动命令区分（默认 `alembic upgrade head && python -m app.backend.main` —— 启动前先应用迁移，幂等；worker 容器用 `python -m app.worker.main` 且自行先跑迁移）。多阶段构建：uv 镜像装依赖，运行阶段只留 `python:3.11-slim` + venv，非 root 运行。
 
 ```bash
 make build      # docker build -f deploy/Dockerfile -t teamai:latest .
@@ -463,8 +503,8 @@ make image-run  # 起 web，挂载本机 config/ 与 .env
 
 三处不显然但必要的细节：
 
-- **构建上下文必须是仓库根**，因为要 `src/`、`app/`、`pyproject.toml`、`uv.lock`。故命令形如 `docker build -f deploy/Dockerfile .`。
-- **`app/` 必须单独 COPY。** wheel 只打 `src/teamai`（`tool.hatch.build.targets.wheel`），进程入口在包外，不随包安装进来。
+- **构建上下文必须是仓库根**，因为要 `src/`、`app/`、`migrations/`、`alembic.ini`、`pyproject.toml`、`uv.lock`。故命令形如 `docker build -f deploy/Dockerfile .`。
+- **`app/` 必须单独 COPY。** wheel 只打 `src/teamai`（`tool.hatch.build.targets.wheel`），进程入口在包外，不随包安装进来。`migrations/` 与 `alembic.ini` 同理单独拷入。
 - **`uv sync` 必须带 `--no-editable`。** 默认的 editable 安装只在 site-packages 留一个 `.pth` 指向构建阶段的 `/build/src`，而运行阶段只拷 venv 不拷源码，那个路径不存在 —— 结果是镜像能构建成功但一 `import teamai` 就 `ModuleNotFoundError`。
 - 忽略规则在 `deploy/Dockerfile.dockerignore` 而非仓库根的 `.dockerignore`：上下文根是仓库根，而 `.dockerignore` 默认只从上下文根读取；BuildKit 支持 `<dockerfile>.dockerignore` 这一形式，故可与 Dockerfile 放在一起。**实测确认过它生效**（排除后上下文 12.69 kB，不排除则 `.venv` 的 323 MB 一并进去）。
 

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from teamai.domain.models import AuditLog, BudgetQuota, Task, TaskStatus
-from teamai.domain.ports import QueuePayload, TaskQueue
+from teamai.domain.ports import MessagePublisher, QueuePayload, ReplyTarget, TaskQueue
 from teamai.domain.repositories import AuditRepository, BudgetRepository, TaskRepository
 
 
@@ -61,6 +61,14 @@ class FakeBudgetRepository(BudgetRepository):
     async def upsert(self, quota: BudgetQuota) -> None:
         self.upserts += 1
         self.quota = quota
+
+
+class FakeMessagePublisher(MessagePublisher):
+    def __init__(self) -> None:
+        self.replies: list[tuple[ReplyTarget, str]] = []
+
+    async def reply(self, target: ReplyTarget, text: str) -> None:
+        self.replies.append((target, text))
 
 
 class FakeAuditRepository(AuditRepository):

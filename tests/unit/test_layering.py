@@ -148,6 +148,26 @@ def test_LLM_SDK_只出现在infrastructure() -> None:
     assert not bad, "pydantic-ai 只允许在 infrastructure 层出现:\n  " + "\n  ".join(bad)
 
 
+def test_平台SDK_只出现在adapters与infrastructure() -> None:
+    """slack-bolt / slack-sdk / lark-oapi 是平台 SDK，锁在 adapters + infrastructure。
+
+    application 与 domain 不得出现平台词汇与 SDK 依赖：两平台差异只应存在于
+    适配层（入向翻译）与基础设施层（出向发送），router 之后不感知平台。
+    """
+    platform_sdks = ("slack_bolt", "slack_sdk", "lark_oapi")
+    bad: list[str] = []
+    for path in _py_files():
+        rel = path.relative_to(SRC)
+        if _layer(rel) in ("adapters", "infrastructure"):
+            continue
+        for lineno, mod in _imported_roots(path):
+            if mod.split(".")[0] in platform_sdks:
+                bad.append(f"{rel}:{lineno} {mod}")
+    assert not bad, (
+        "平台 SDK 只允许在 adapters 与 infrastructure 层出现:\n  " + "\n  ".join(bad)
+    )
+
+
 def test_domain_只依赖自身() -> None:
     """domain 是叶子层：不得 import teamai 下任何其他层。
 
@@ -196,6 +216,7 @@ def test_domain_不导入三方库() -> None:
     ("impl", "abstraction"),
     [
         ("teamai.infrastructure.queue:RedisTaskQueue", "teamai.domain.ports:TaskQueue"),
+        ("teamai.infrastructure.messaging:PublisherRegistry", "teamai.domain.ports:MessagePublisher"),
         ("teamai.infrastructure.repositories:SQLTaskRepository", "teamai.domain.repositories:TaskRepository"),
         ("teamai.infrastructure.repositories:SQLAuditRepository", "teamai.domain.repositories:AuditRepository"),
     ],

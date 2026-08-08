@@ -18,7 +18,8 @@ class MemoryEntryModel(Base):
     channel_instance_id: Mapped[str] = mapped_column(String(32), index=True)
     content: Mapped[str] = mapped_column(Text)
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType))
-    source_user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 飞书 user_id（ou_+32hex）超旧宽度，加宽
+    source_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visibility: Mapped[Visibility] = mapped_column(Enum(Visibility), default=Visibility.CHANNEL)
     embedding_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -29,6 +30,7 @@ class PreferenceModel(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     channel_instance_id: Mapped[str] = mapped_column(String(32), index=True)
-    user_id: Mapped[str] = mapped_column(String(32))
+    # 飞书 user_id（ou_+32hex）超旧宽度，加宽
+    user_id: Mapped[str] = mapped_column(String(64))
     preference: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

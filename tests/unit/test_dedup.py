@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from teamai.adapters.slack import dedup_key
+from teamai.adapters.slack.translator import dedup_key
 from teamai.domain.ports import EventDeduplicator
 from teamai.infrastructure.dedup import InMemoryEventDeduplicator
 
@@ -18,23 +18,30 @@ from teamai.infrastructure.dedup import InMemoryEventDeduplicator
 class TestDedupKey:
     def test_优先取信封的_event_id(self) -> None:
         body = {"event_id": "Ev123", "event": {"channel": "C1", "ts": "1.0"}}
-        assert dedup_key(body) == "Ev123"
+        assert dedup_key(body) == "slack:Ev123"
 
     def test_无_event_id_时退回_channel_ts_subtype(self) -> None:
         body = {"event": {"channel": "C1", "ts": "1.0", "subtype": "edited"}}
-        assert dedup_key(body) == "C1:1.0:edited"
+        assert dedup_key(body) == "slack:C1:1.0:edited"
 
     def test_信封为空也不抛(self) -> None:
-        assert dedup_key({}) == "::"
+        assert dedup_key({}) == "slack:::"
 
     def test_event_为_None_不抛(self) -> None:
         """Slack 偶发送来 event: null，get 的默认值兜不住 None。"""
-        assert dedup_key({"event": None}) == "::"
+        assert dedup_key({"event": None}) == "slack:::"
 
     def test_同一事件重投得到同一个键(self) -> None:
         first = {"event_id": "Ev9", "event": {"channel": "C1", "ts": "1.0"}}
         retry = {"event_id": "Ev9", "event": {"channel": "C1", "ts": "1.0"}}
         assert dedup_key(first) == dedup_key(retry)
+
+    def test_键带平台前缀不与飞书互相误判(self) -> None:
+        """两平台 ID 空间无关联，键须按平台命名空间隔离。"""
+        slack_body = {"event_id": "Ev9", "event": {"channel": "C1", "ts": "1.0"}}
+        assert dedup_key(slack_body) == "slack:Ev9"
+        # 飞书侧 translator 产出 feishu:... 前缀，二者天然不同
+        assert "slack:Ev9" != "feishu:om_9"
 
 
 class TestInMemoryDeduplicator:
@@ -196,7 +203,7 @@ class TestHandlerDedup:
         await handle(body)
         await handle(body)  # 重投
         await handle(body)  # 再重投
-        assert handled == ["Ev777"], "同一事件应只被处理一次"
+        assert handled == ["slack:Ev777"], "同一事件应只被处理一次"
 
     async def test_不同事件都放行(self, dedup: InMemoryEventDeduplicator) -> None:
         handled: list[str] = []
@@ -208,4 +215,4 @@ class TestHandlerDedup:
 
         await handle({"event_id": "EvA", "event": {}})
         await handle({"event_id": "EvB", "event": {}})
-        assert handled == ["EvA", "EvB"]
+        assert handled == ["slack:EvA", "slack:EvB"]

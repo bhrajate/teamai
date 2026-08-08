@@ -64,6 +64,11 @@ COPY --from=builder --chown=teamai:teamai /build/.venv /app/.venv
 # 进程入口在包外，不随包安装进来。
 COPY --chown=teamai:teamai app ./app
 
+# 迁移脚本：生产建库走 alembic upgrade head（init_db 的开发建表保留给测试与本机）。
+# alembic.ini 在 CWD 解析，WORKDIR=/app 故拷到根下。
+COPY --chown=teamai:teamai alembic.ini ./alembic.ini
+COPY --chown=teamai:teamai migrations ./migrations
+
 # 配置文件不进镜像 —— config/config.yaml 与 .env 都含环境相关内容，
 # 应在运行时挂载或用环境变量注入：
 #   docker run -v ./config:/app/config:ro --env-file .env teamai:latest
@@ -80,4 +85,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).status==200 else 1)"
 
-CMD ["python", "-m", "app.backend.main"]
+# 启动前先跑迁移（幂等：alembic 按版本号跳过已应用的），再起业务进程。
+# worker 容器如需同样生效，启动命令改为：
+#   docker run ... /bin/sh -c "alembic upgrade head && python -m app.worker.main"
+CMD ["sh", "-c", "alembic upgrade head && python -m app.backend.main"]

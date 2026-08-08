@@ -25,7 +25,7 @@ class TaskOrchestrator:
     async def create_task(
         self,
         channel_instance_id: str,
-        thread_ts: str,
+        thread_ref: str,
         requester_id: str,
         intent: str,
         *,
@@ -37,7 +37,7 @@ class TaskOrchestrator:
         task = Task(
             id=gen_id("task"),
             channel_instance_id=channel_instance_id,
-            thread_ts=thread_ts,
+            thread_ref=thread_ref,
             requester_id=requester_id,
             intent=intent,
             tag_name=tag_name,
@@ -85,6 +85,6 @@ class TaskOrchestrator:
             model_level=model_level,
             prompt=prompt,
             tag_name=task.tag_name,
-            thread_ts=task.thread_ts,
+            thread_ref=task.thread_ref,
         )
         await self._queue.enqueue(payload)

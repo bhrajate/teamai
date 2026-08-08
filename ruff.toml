@@ -2,6 +2,9 @@ line-length = 120
 target-version = "py311"
 # "." 让根目录下的 app/（进程入口包）被判为 first-party，与 teamai/tests 同块排序
 src = ["src", "tests", "."]
+# alembic 自动生成的迁移文件不遵循项目风格（长 enum 行等），不人工格式化；
+# env.py 是手写的，仍在 lint 范围内
+extend-exclude = ["migrations/versions"]
 
 [lint]
 select = [
