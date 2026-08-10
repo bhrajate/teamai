@@ -24,6 +24,17 @@ class Intent:
         """
         return "full" if self.kind in _FULL_MODEL_KINDS else "light"
 
+    @property
+    def is_long_running(self) -> bool:
+        """是否走异步链路（入队交 worker 执行）。
+
+        与 model_level 同理放在 kind 旁边。判据是「耗时是否可能超过平台的
+        事件响应窗口」，不是「是否用贵模型」—— 两个集合恰好高度重合但语义
+        不同，故分开定义：documentation 用 light 档却要多轮工具调用，
+        属于长任务；未来若出现「贵但一轮出结果」的意图也不必被迫异步。
+        """
+        return self.kind in _LONG_RUNNING_KINDS
+
 
 _QUERY_KINDS = {"query", "chat"}
 _TASK_KEYWORDS = [
@@ -37,6 +48,12 @@ _TASK_KEYWORDS = [
 
 # 需要高阶模型的意图：推理链长、改动有风险，light 档位不够用
 _FULL_MODEL_KINDS = {"code_review", "bugfix", "data_analysis"}
+
+# 需要异步执行的意图：要读代码/查数据/操作外部系统，多轮工具调用，
+# 耗时不可控且可能远超平台的事件响应窗口（Slack/飞书均为 3s）。
+# 其余意图（query / chat / ticket / general_task）是单轮生成，秒级返回，
+# 同步回复的体验明显更好，不值得多绕一趟队列。
+_LONG_RUNNING_KINDS = {"code_review", "bugfix", "data_analysis", "documentation", "pr_operation"}
 
 
 class IntentClassifier:

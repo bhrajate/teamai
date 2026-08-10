@@ -1,7 +1,14 @@
-"""消息路由：将平台事件分派到编排链路。"""
+"""消息路由：将平台事件分派到编排链路。
+
+两条执行链路在此分叉：短任务就地同步跑完再回复；长任务（见
+Intent.is_long_running）入队后立即回「已受理」，由 worker 进程消费并
+经 MessagePublisher 回帖。分叉理由是平台的事件响应窗口只有 3 秒，
+而多轮工具调用的任务耗时不可控。
+"""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from teamai.application.agent.context import ContextBundle
@@ -16,6 +23,8 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.tag import TagResolver
 from teamai.domain.models import ChannelInstance, Task, TaskStatus
 from teamai.domain.repositories import PolicyRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -85,6 +94,23 @@ class MessageRouter:
             tag_name=tag_name,
             model_level=intent.model_level,
         )
+
+        if intent.is_long_running:
+            try:
+                await self._orchestrator.enqueue(task, text)
+            except ConnectionError as exc:
+                # 队列不可用不该让功能整体失效：任务已落库且仍在 PENDING，
+                # 就地同步执行即可，代价是本次响应变慢（可能超平台窗口）。
+                logger.warning(f"任务 {task.id} 入队失败，降级为同步执行: {exc}")
+            else:
+                # 状态留在 PENDING，由 worker 取出后推进 RUNNING ——
+                # 在此提前置 RUNNING 会让「排队中」与「执行中」无法区分，
+                # 超时巡检也就没法判断任务是卡在队列还是卡在执行。
+                return RoutingDecision(
+                    handler="respond",
+                    message=f"任务已受理（{intent.kind}），完成后在本线程回复。",
+                )
+
         await self._orchestrator.transition(task, TaskStatus.RUNNING, user_id)
         return await self.execute_task(task, text, tag_name, instance, actor=user_id)
 

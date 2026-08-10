@@ -431,6 +431,39 @@ sequenceDiagram
     S-->>U: 结果展示
 ```
 
+上图是短任务（同步）链路。长任务在 `createTask` 之后分叉：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant R as MessageRouter (web 进程)
+    participant O as TaskOrchestrator
+    participant Q as Redis 队列
+    participant W as worker 进程
+    participant A as AgentRuntime
+    participant P as MessagePublisher
+
+    U->>R: @TeamAI 帮我 review payment 模块
+    R->>R: intent.is_long_running == true
+    R->>O: createTask(...)  → 落库 PENDING
+    R->>Q: enqueue(payload)
+    R-->>U: 「任务已受理，完成后在本线程回复」
+    Note over R,U: 3s 内返回，不等 Agent
+
+    W->>Q: dequeue()
+    Q-->>W: payload
+    W->>O: transition(PENDING → RUNNING)
+    W->>A: execute_task(prompt, tag, instance)
+    A-->>W: StageResult
+    W->>O: transition(→ DONE / FAILED / PAUSED)
+    W->>P: reply(ReplyTarget, message)
+    P-->>U: 结果回到原线程
+```
+
+两点约定：状态留在 PENDING 直到 worker 取走（据此区分「排队中」与「执行中」，超时巡检才能判断卡在哪一段）；`ReplyTarget` 由 `ChannelInstance` 与 `task.thread_ref` 拼出，故队列载荷无需携带平台信息。入队抛 `ConnectionError` 时 router 降级为同步执行。
+
+验证入口：`make verify-longtask`（真 Redis + 内存仓储，验证序列化往返）与 `make verify-longtask-db`（真 Postgres + 真 Redis，配合 `make run-worker` 验证跨进程可见性）。
+
 ### 5.2 预算暂停链路
 
 ```mermaid
@@ -453,7 +486,10 @@ sequenceDiagram
 | 决策点 | 方案 | 理由 |
 |--------|------|------|
 | 长任务执行模型 | worker 进程轮询消费 Redis 队列（app/worker/main.py） | 与请求线程解耦，支持小时/天级任务 |
+| 同步/异步分流判据 | `Intent.is_long_running`（按意图 kind 判定，见 application/intent.py） | 平台事件响应窗口只有 3s，多轮工具调用的意图必须转异步；单轮生成的同步回更快 |
+| 入队失败降级 | MessageRouter 捕获 ConnectionError，就地同步执行 | Redis 不可用时功能不整体失效，代价是本次响应变慢 |
 | 任务状态持久化 | PostgreSQL 事务 + 状态机校验 | 崩溃恢复与审计一致 |
+| 事务边界 | SQL 仓储的写方法各自 commit | 容器持有单个共享 session，不提交则改动对别的进程不可见（worker 会读不到任务）。代价是「建任务」与「写审计」分属两个事务；要整条消息一个事务需引入 UnitOfWork 或 session-per-task |
 | 记忆检索 | 文本 embedding 入 Qdrant + KV 存偏好 | 语义召回 + 精确偏好 |
 | 幂等 | 按信封 `event_id` 去重，Redis `SET NX EX` 原子记账 | 防 Slack 重投/乱序 |
 | 模型分级 | ModelRegistry.build(model_level) 预装配不同 Agent | 简单任务轻量模型，复杂任务旗舰模型 |
@@ -468,6 +504,8 @@ sequenceDiagram
 | 单元测试 | Task 状态机合法迁移、Budget 配额核算、Permission 鉴权矩阵 | §5 正确性属性 |
 | 属性测试 | 状态机任意非法迁移必抛异常；预算在任意序列下不超过上限（pydantic-ai UsageLimits 兜底） | §5 正确性属性 |
 | 集成测试 | Slack 模拟事件 → 路由 → 编排 → 回复全链路；记忆写入→检索命中 | §7.2 |
+| 跨进程链路 | `tests/integration/test_long_task_flow.py`：真 router + 真 orchestrator + 真 worker.handle_payload 串在共享队列上，验证载荷字段对齐与状态接力（仍全内存，CI 无依赖） | §5.1 |
+| 约束固化 | `tests/unit/test_repository_commit.py`：AST 静态断言仓储写方法必须 commit（漏提交则跨进程不可见，同步链路不会暴露） | §6 事务边界 |
 | E2E 评测 | 频道评测集（代码审查/数据汇总/文档生成）人工标注 | §7.3 |
 | 安全测试 | 频道隔离（ch_A 无法读 ch_B 记忆）；审计完整性断言 | §7.4 |
 | 模型降级 | FallbackModel 主模型失败自动切换备模型；重试逻辑由 pydantic-ai 托管 | §3.6 |

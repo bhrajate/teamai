@@ -15,12 +15,10 @@ class TaskOrchestrator:
         repo: TaskRepository,
         audit: AuditLogWriter,
         queue: TaskQueue,
-        long_task_threshold: int = 3,
     ) -> None:
         self._repo = repo
         self._audit = audit
         self._queue = queue
-        self._long_task_threshold = long_task_threshold
 
     async def create_task(
         self,
@@ -31,9 +29,8 @@ class TaskOrchestrator:
         *,
         tag_name: str | None = None,
         model_level: str = "light",
-        async_execution: bool = False,
-        prompt: str = "",
     ) -> Task:
+        """建任务并落库。不入队 —— 是否转异步由调用方决定，见 enqueue。"""
         task = Task(
             id=gen_id("task"),
             channel_instance_id=channel_instance_id,
@@ -51,8 +48,6 @@ class TaskOrchestrator:
             task_id=task.id,
             detail={"intent": intent, "tag": tag_name},
         )
-        if async_execution:
-            await self._enqueue(task, model_level, prompt)
         return task
 
     async def transition(self, task: Task, to: TaskStatus, actor: str) -> Task:
@@ -78,11 +73,21 @@ class TaskOrchestrator:
             raise ValueError(f"任务已处于终态 {task.status.value}，无法取消")
         return await self.transition(task, TaskStatus.CANCELLED, actor)
 
-    async def _enqueue(self, task: Task, model_level: str, prompt: str = "") -> None:
+    async def enqueue(self, task: Task, prompt: str = "") -> None:
+        """把已落库的任务投进长任务队列，交 worker 执行。
+
+        与 create_task 分开两步、而非做成它的一个 async_execution 开关：
+        调用方要的是「先建任务、再尝试入队、入队失败则就地同步执行」。若在
+        create_task 内部入队，异常会在 return task 之前抛出，调用方手里既没
+        task 也没 id，想降级只能重建一个，白留一条孤儿 PENDING 记录。
+
+        prompt 单独传：tasks 表只存 intent 不存原文，worker 要靠载荷拿指令。
+        model_level 则取自 task —— 两者本就该一致，分开传就意味着可以不一致。
+        """
         payload = QueuePayload(
             task_id=task.id,
             channel_instance_id=task.channel_instance_id,
-            model_level=model_level,
+            model_level=task.model_level,
             prompt=prompt,
             tag_name=task.tag_name,
             thread_ref=task.thread_ref,

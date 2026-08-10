@@ -32,44 +32,59 @@ async def test_创建任务落库并写审计(
     assert log.detail == {"intent": "review", "tag": None}
 
 
-async def test_同步任务不入队(orchestrator: TaskOrchestrator, queue: FakeTaskQueue) -> None:
+async def test_建任务本身不入队(orchestrator: TaskOrchestrator, queue: FakeTaskQueue) -> None:
+    """create_task 只负责建与落库。是否转异步由调用方另行决定（见 enqueue）。"""
     await orchestrator.create_task("ch1", "ts1", "u1", "review")
     assert queue.enqueued == []
 
 
-async def test_异步任务入队且载荷正确(
-    orchestrator: TaskOrchestrator,
-    queue: FakeTaskQueue,
-) -> None:
-    task = await orchestrator.create_task(
-        "ch1", "ts1", "u1", "refactor", model_level="full", async_execution=True
-    )
+async def test_入队载荷正确(orchestrator: TaskOrchestrator, queue: FakeTaskQueue) -> None:
+    task = await orchestrator.create_task("ch1", "ts1", "u1", "refactor", model_level="full")
+    await orchestrator.enqueue(task, "帮我重构这个模块")
 
     assert len(queue.enqueued) == 1
     p = queue.enqueued[0]
     assert p.task_id == task.id
     assert p.channel_instance_id == "ch1"
-    assert p.model_level == "full"
+    assert p.thread_ref == "ts1"
+    assert p.prompt == "帮我重构这个模块"
+
+
+async def test_入队的model_level取自任务(
+    orchestrator: TaskOrchestrator, queue: FakeTaskQueue
+) -> None:
+    """不单独传 model_level，避免载荷与任务记录不一致。"""
+    task = await orchestrator.create_task("ch1", "ts1", "u1", "x", model_level="full")
+    await orchestrator.enqueue(task)
+    assert queue.enqueued[0].model_level == task.model_level == "full"
 
 
 async def test_入队失败向上抛出(orchestrator: TaskOrchestrator, queue: FakeTaskQueue) -> None:
-    """队列不可用时异常不应被吞掉，由调用方决定降级策略。"""
+    """队列不可用时异常不应被吞掉，由调用方决定降级策略（router 降级为同步执行）。"""
+    task = await orchestrator.create_task("ch1", "ts1", "u1", "x")
     queue.fail_next = True
     with pytest.raises(ConnectionError):
-        await orchestrator.create_task("ch1", "ts1", "u1", "x", async_execution=True)
+        await orchestrator.enqueue(task)
 
 
-async def test_入队失败前任务已落库(
+async def test_入队失败后任务仍可用于降级(
     orchestrator: TaskOrchestrator,
     queue: FakeTaskQueue,
     task_repo: FakeTaskRepository,
 ) -> None:
-    """记录当前实现的行为：入队在落库之后，失败不回滚，任务留在 PENDING。"""
+    """入队与建任务分两步的意义：失败后调用方手里仍有 task，能就地同步执行。
+
+    若入队做成 create_task 的内部步骤，异常会在 return task 之前抛出，
+    调用方拿不到任务对象，只能重建一个，白留一条孤儿 PENDING 记录。
+    """
+    task = await orchestrator.create_task("ch1", "ts1", "u1", "x")
     queue.fail_next = True
     with pytest.raises(ConnectionError):
-        await orchestrator.create_task("ch1", "ts1", "u1", "x", async_execution=True)
-    assert len(task_repo.items) == 1
-    assert next(iter(task_repo.items.values())).status is TaskStatus.PENDING
+        await orchestrator.enqueue(task)
+
+    assert len(task_repo.items) == 1, "不该产生第二条任务记录"
+    assert task.status is TaskStatus.PENDING, "仍是 PENDING，可继续推进 RUNNING 同步跑"
+    assert task_repo.items[task.id] is task
 
 
 async def test_迁移更新仓储并写审计(

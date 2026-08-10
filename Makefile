@@ -21,6 +21,7 @@ IMAGE      ?= teamai:latest
 
 # 目标名与同名目录/文件冲突时（如 config、tests），make 会以为已是最新而跳过
 .PHONY: help install lock sync lint fmt test test-cov check run-web run-worker migrate \
+	verify-longtask verify-longtask-db \
         up down restart logs ps build image-run clean config
 
 .DEFAULT_GOAL := help
@@ -52,10 +53,10 @@ config:  ## 从示例生成 config/config.yaml 与 .env（已存在则不覆盖�
 # ---------- 代码质量 ----------
 
 lint:  ## ruff 检查（不改文件）
-	$(RUFF) check src tests app
+	$(RUFF) check src tests app scripts
 
 fmt:  ## ruff 自动修复可修项
-	$(RUFF) check --fix src tests app
+	$(RUFF) check --fix src tests app scripts
 
 test:  ## 跑全部测试
 	$(PYTEST) -q
@@ -72,6 +73,12 @@ run-web:  ## 起 web 进程（Admin API + Slack 入口）
 
 run-worker:  ## 起 worker 进程（消费队列 + 定时调度）
 	$(PY) -m app.worker.main
+
+verify-longtask:  ## 冒烟验证长任务链路（需 make up 起 redis）
+	$(PY) -m scripts.verify_long_task_flow
+
+verify-longtask-db:  ## 同上但用真 Container 入队，随后手动跑 make run-worker 看消费
+	$(PY) -m scripts.verify_long_task_flow --real-db
 
 migrate:  ## 应用数据库迁移（alembic upgrade head，生产建库路径）
 	$(UV) run alembic upgrade head
