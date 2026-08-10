@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import signal
+from datetime import timedelta
 
-from teamai.container import Container, build_container
+from teamai.config import settings
+from teamai.container import Container, build_container, open_job_scope
 from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload, ReplyTarget
 from teamai.infrastructure.db import init_db_or_warn
@@ -119,13 +122,64 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
 
 
+async def reset_budget_periods(container: Container) -> None:
+    """预算周期重置。
+
+    经 open_job_scope 拿独立 session：定时任务与消费循环同在一个事件循环上，
+    共用容器那个 session 会并发撞车（详见 open_job_scope 的说明）。
+
+    异常不外抛：定时任务抛出去没人接，只会污染 scheduler 的日志。
+    """
+    try:
+        async with open_job_scope(container) as scope:
+            count = await scope.budget.reset_expired_periods()
+        if count:
+            logger.info(f"预算周期重置: {count} 条配额已翻页")
+    except Exception as exc:
+        logger.error(f"预算周期重置失败: {exc}")
+
+
+async def sweep_stale_tasks(container: Container) -> None:
+    """任务超时巡检。独立 session 与异常兜底的理由同上。"""
+    try:
+        async with open_job_scope(container) as scope:
+            swept = await scope.orchestrator.sweep_stale_tasks(
+                pending_timeout=timedelta(minutes=settings.jobs_pending_timeout_minutes),
+                running_timeout=timedelta(minutes=settings.jobs_running_timeout_minutes),
+            )
+        if swept:
+            logger.warning(f"超时巡检: {len(swept)} 个任务判为 FAILED: {[t.id for t in swept]}")
+    except Exception as exc:
+        logger.error(f"超时巡检失败: {exc}")
+
+
 def register_jobs(container: Container) -> None:
     """注册定时任务。
 
-    目前无内置周期任务；预算周期重置、任务超时巡检等应在此登记。
-    留作显式挂载点，避免 scheduler 又变成起了但没人用的状态。
+    两个 job 共用一个间隔：都只扫一遍表，跑得更密没有收益。
+
+    预算重置不可缺：没有它，任一频道耗尽配额后就永久 EXHAUSTED，
+    BudgetQuota.period 形同虚设。
+    超时巡检不可缺：worker 崩溃时在执行的任务会永久停在 RUNNING，
+    既不重投也不失败，发起人等不到任何回复。
     """
-    return None
+    interval = settings.jobs_sweep_interval_minutes
+    # ⚠️ 必须用 functools.partial 绑定 container，不能写成 lambda: job(container)。
+    # APScheduler 用 iscoroutinefunction_partial 判断该 await 还是丢线程池：它会
+    # 拆开 partial 看到里面是协程函数（True），但对 lambda 只看到普通函数
+    # （False）—— 于是把 lambda 丢进线程池执行，拿到一个从未被 await 的协程
+    # 对象就丢掉，job 体静默不执行，连报错都没有。
+    scheduler.add_interval(
+        "budget-period-reset",
+        minutes=interval,
+        coro=functools.partial(reset_budget_periods, container),
+    )
+    scheduler.add_interval(
+        "stale-task-sweep",
+        minutes=interval,
+        coro=functools.partial(sweep_stale_tasks, container),
+    )
+    logger.info(f"已注册定时任务: 预算周期重置 / 超时巡检，每 {interval} 分钟")
 
 
 async def _main() -> None:

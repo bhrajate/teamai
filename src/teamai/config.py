@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     # budget.*
     budget_period: Literal["MONTHLY", "DAILY", "WEEKLY"] = "MONTHLY"
 
+    # jobs.*（worker 里的定时任务，见 app/worker/main.py 的 register_jobs）
+    # 巡检频率。两个 job 都挂在这个间隔上：它们都只扫一遍表，跑得比这密没意义。
+    jobs_sweep_interval_minutes: int = 10
+    # PENDING 超时：任务已入队但迟迟没被取走。队列正常时是秒级出队，
+    # 半小时没动说明 worker 全挂了或载荷坏了。
+    jobs_pending_timeout_minutes: int = 30
+    # RUNNING 超时：worker 取走后执行中。设计上长任务是小时/天级，故给足 24h；
+    # 超过它更可能是 worker 崩在半路、任务永远停在 RUNNING。
+    jobs_running_timeout_minutes: int = 24 * 60
+
     # admin_api.*
     admin_api_host: str = "0.0.0.0"
     admin_api_port: int = 8000

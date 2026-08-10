@@ -178,7 +178,7 @@ app/（进程入口）→ adapters ─┬→ application → agent → tools
 | 进程 | 启动 | 职责 |
 |------|------|------|
 | web | `python -m app.backend.main`，或 `uvicorn app.backend.main:create_app --factory` | Admin API + 各平台连接器（遍历 CONNECTOR_BUILDERS；Slack 二选一、飞书回调/长连接二选一，由 platforms.* 配置决定） |
-| worker | `python -m app.worker.main` | 阻塞消费长任务队列 + APScheduler 定时调度 + 结果经 MessagePublisher 回帖 |
+| worker | `python -m app.worker.main` | 阻塞消费长任务队列 + APScheduler 定时任务（预算周期重置 / 任务超时巡检）+ 结果经 MessagePublisher 回帖 |
 
 拆两个进程的理由：长任务是小时/天级，与 Slack 事件的毫秒级响应放同一进程会互相拖累——长任务卡住事件循环会让 Slack 事件超时重投，而 web 按 QPS 扩容也会把 worker 副本一并放大、导致同一任务被多次执行。
 
@@ -488,6 +488,9 @@ sequenceDiagram
 | 长任务执行模型 | worker 进程阻塞消费 Redis 队列（app/worker/main.py） | 与请求线程解耦，支持小时/天级任务 |
 | 出队方式 | BLPOP 阻塞取，等待上限由 `RedisClientProvider.max_block_seconds` 夹住 | 轮询的延迟下限就是轮询间隔，且空转时仍不停打 Redis；阻塞取一有任务即刻返回。上限必须小于 socket 读超时，否则客户端先抛 TimeoutError 而非正常返回 nil |
 | 停止信号响应 | 不与 dequeue 抢跑，最多等一个阻塞窗口 | cancel 正在进行的 BLPOP 可能在「Redis 已弹出、客户端未收到」时丢任务 |
+| 定时任务 | APScheduler，注册见 register_jobs：预算周期重置 + 任务超时巡检 | 前者不做则配额耗尽后永久 EXHAUSTED；后者不做则 worker 崩溃时任务永久停在 RUNNING |
+| 定时任务的 session | 每次运行经 `open_job_scope` 开独立 session | AsyncSession 不允许并发使用，而 job 与消费循环同在一个事件循环上；共用会让写库成功但紧随的审计写入失败，留下无留痕的状态变更 |
+| 定时任务的错过策略 | `misfire_grace_time` = 一个完整间隔，`coalesce=True` | APScheduler 默认宽容期仅 1s，事件循环忙过 1s 该次就被丢弃而非迟跑；周期巡检迟跑无害、被丢才有害 |
 | 同步/异步分流判据 | `Intent.is_long_running`（按意图 kind 判定，见 application/intent.py） | 平台事件响应窗口只有 3s，多轮工具调用的意图必须转异步；单轮生成的同步回更快 |
 | 入队失败降级 | MessageRouter 捕获 ConnectionError，就地同步执行 | Redis 不可用时功能不整体失效，代价是本次响应变慢 |
 | 任务状态持久化 | PostgreSQL 事务 + 状态机校验 | 崩溃恢复与审计一致 |
@@ -507,7 +510,8 @@ sequenceDiagram
 | 属性测试 | 状态机任意非法迁移必抛异常；预算在任意序列下不超过上限（pydantic-ai UsageLimits 兜底） | §5 正确性属性 |
 | 集成测试 | Slack 模拟事件 → 路由 → 编排 → 回复全链路；记忆写入→检索命中 | §7.2 |
 | 跨进程链路 | `tests/integration/test_long_task_flow.py`：真 router + 真 orchestrator + 真 worker.handle_payload 串在共享队列上，验证载荷字段对齐与状态接力（仍全内存，CI 无依赖） | §5.1 |
-| 约束固化 | `tests/unit/test_repository_commit.py`：AST 静态断言仓储写方法必须 commit（漏提交则跨进程不可见，同步链路不会暴露） | §6 事务边界 |
+| 约束固化 | `tests/unit/test_repository_commit.py`：AST 静态断言仓储写方法必须 commit（漏提交则跨进程不可见，同步链路不会暴露）；`tests/unit/test_worker_jobs.py` 断言定时任务的 func 能被 await（写成 lambda 则 APScheduler 丢线程池、job 体静默不执行） | §6 事务边界 / 定时任务 |
+| 定时任务 | `test_budget_period.py` 周期判据与重置语义；`test_task_sweep.py` 两类超时各自阈值、终态与 PAUSED/WAITING_INPUT 不被误杀 | §6 定时任务 |
 | E2E 评测 | 频道评测集（代码审查/数据汇总/文档生成）人工标注 | §7.3 |
 | 安全测试 | 频道隔离（ch_A 无法读 ch_B 记忆）；审计完整性断言 | §7.4 |
 | 模型降级 | FallbackModel 主模型失败自动切换备模型；重试逻辑由 pydantic-ai 托管 | §3.6 |

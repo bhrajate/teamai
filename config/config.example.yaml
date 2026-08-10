@@ -34,9 +34,21 @@ event_dedup:
 qdrant:
   collection: teamai-memory
 
-# token 预算的统计周期。
+# token 预算的统计周期。周期走满后由 worker 的定时任务清零用量（见下方 jobs），
+# 没有那道巡检的话，配额耗尽的频道会永久停在 EXHAUSTED。
 budget:
   period: MONTHLY  # MONTHLY | DAILY | WEEKLY
+
+# worker 进程里的定时任务（app/worker/main.py 的 register_jobs）。
+jobs:
+  # 巡检频率。预算重置与超时巡检共用这个间隔，两者都只扫一遍表，跑得更密无收益。
+  sweep_interval_minutes: 10
+  # PENDING 超时：任务已入队却迟迟没被取走。队列正常时是秒级出队，
+  # 半小时没动说明 worker 全挂了或载荷坏了 —— 判为 FAILED 并留审计。
+  pending_timeout_minutes: 30
+  # RUNNING 超时：已被取走、执行中。长任务设计上是小时/天级，故给足 24h；
+  # 超过它更可能是 worker 崩在半路、任务永远停在 RUNNING。
+  running_timeout_minutes: 1440
 
 # Admin API 监听地址。
 admin_api:

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from teamai.application.agent.runtime import AgentRuntime
@@ -171,6 +173,41 @@ def build_container() -> Container:
         router=router,
         tools=tools,
     )
+
+
+@dataclass
+class JobScope:
+    """定时任务用的窄依赖集合，建在一个独立 session 上。"""
+
+    budget: BudgetController
+    orchestrator: TaskOrchestrator
+
+
+@asynccontextmanager
+async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
+    """为一次定时任务运行开一个独立 session，用完即关。
+
+    不复用 Container 那个共享 session：AsyncSession 不允许并发使用，而定时任务
+    与消费循环跑在同一个事件循环上。共用会撞出
+    「This session is provisioning a new connection; concurrent operations are
+    not permitted」或「This transaction is closed」——实测两个同间隔的 job 一起
+    触发时，写库成功了但紧随其后的审计写入失败，留下没有留痕的状态变更。
+
+    只装 job 真正要用的两样东西，不整个 build_container()：后者还会新建 Redis
+    连接池与各平台 publisher，每次巡检都建一套等于按巡检频率泄漏连接。queue
+    直接借用容器那个 —— 它走 Redis，与 session 无关。
+    """
+    from teamai.infrastructure.db import get_session_factory
+
+    session = get_session_factory()()
+    try:
+        audit = AuditLogWriter(SQLAuditRepository(session))
+        yield JobScope(
+            budget=BudgetController(SQLBudgetRepository(session), audit),
+            orchestrator=TaskOrchestrator(SQLTaskRepository(session), audit, container.queue),
+        )
+    finally:
+        await session.close()
 
 
 _container: Container | None = None

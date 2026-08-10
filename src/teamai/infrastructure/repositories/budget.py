@@ -20,6 +20,7 @@ def _budget_to_model(b: BudgetQuota) -> BudgetQuotaModel:
         channel_instance_id=b.channel_instance_id,
         state=b.state,
         updated_at=b.updated_at,
+        period_started_at=b.period_started_at,
     )
 
 
@@ -33,6 +34,7 @@ def _model_to_budget(m: BudgetQuotaModel) -> BudgetQuota:
         channel_instance_id=m.channel_instance_id,
         state=m.state,
         updated_at=m.updated_at,
+        period_started_at=m.period_started_at,
     )
 
 
@@ -47,6 +49,10 @@ class SQLBudgetRepository(BudgetRepository):
         )
         m = (await self._session.execute(stmt)).scalars().first()
         return _model_to_budget(m) if m else None
+
+    async def list_all(self) -> list[BudgetQuota]:
+        rows = (await self._session.execute(select(BudgetQuotaModel))).scalars().all()
+        return [_model_to_budget(r) for r in rows]
 
     async def upsert(self, quota: BudgetQuota) -> None:
         # 提交理由见 SQLTaskRepository 的类说明。预算消耗必须落盘，

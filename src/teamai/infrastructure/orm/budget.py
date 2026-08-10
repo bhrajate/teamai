@@ -22,3 +22,5 @@ class BudgetQuotaModel(Base):
     channel_instance_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     state: Mapped[BudgetState] = mapped_column(Enum(BudgetState), default=BudgetState.ACTIVE)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 当前计费周期起点，供周期重置巡检判断是否该翻页
+    period_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

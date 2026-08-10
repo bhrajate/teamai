@@ -1,12 +1,25 @@
-"""任务编排：创建、状态推进、取消、长任务入队。"""
+"""任务编排：创建、状态推进、取消、长任务入队、超时巡检。"""
 
 from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime, timedelta
 
 from teamai.domain.identity import gen_id
 from teamai.domain.models import AuditAction, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
 from teamai.domain.repositories import TaskRepository
 from teamai.domain.services import AuditLogWriter
+
+logger = logging.getLogger(__name__)
+
+# 超时巡检推进状态时的 actor。取固定串而非某个真实用户：审计里要能一眼
+# 区分「人取消的」与「系统判超时的」。
+_SWEEPER_ACTOR = "system:timeout-sweeper"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class TaskOrchestrator:
@@ -72,6 +85,38 @@ class TaskOrchestrator:
         if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
             raise ValueError(f"任务已处于终态 {task.status.value}，无法取消")
         return await self.transition(task, TaskStatus.CANCELLED, actor)
+
+    async def sweep_stale_tasks(
+        self,
+        pending_timeout: timedelta,
+        running_timeout: timedelta,
+        now: datetime | None = None,
+    ) -> list[Task]:
+        """把卡死的任务收敛到 FAILED，返回被处理的任务。
+
+        两类卡死分别给阈值：PENDING 是「入队了没人取」（队列正常时秒级出队，
+        久了说明 worker 全挂或载荷坏了）；RUNNING 是「取走了没结果」（长任务
+        本就是小时/天级，故阈值宽得多，超过更可能是 worker 崩在半路）。
+
+        没有这道巡检，worker 崩溃时正在执行的任务会永久停在 RUNNING：既不
+        重投也不失败，发起人等不到任何回复，Admin 里也看不出它已经死了。
+
+        单条失败不打断整轮：一个任务的状态机异常不该让其余任务继续挂着。
+        """
+        moment = now or _utcnow()
+        swept: list[Task] = []
+        for statuses, timeout in (
+            ((TaskStatus.PENDING,), pending_timeout),
+            ((TaskStatus.RUNNING,), running_timeout),
+        ):
+            for task in await self._repo.list_stale(statuses, moment - timeout):
+                try:
+                    await self.transition(task, TaskStatus.FAILED, actor=_SWEEPER_ACTOR)
+                except Exception as exc:  # pragma: no cover - 状态机兜底
+                    logger.warning(f"超时巡检推进失败 {task.id}: {exc}")
+                    continue
+                swept.append(task)
+        return swept
 
     async def enqueue(self, task: Task, prompt: str = "") -> None:
         """把已落库的任务投进长任务队列，交 worker 执行。

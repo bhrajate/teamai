@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from datetime import datetime
 
 from teamai.domain.models import AuditLog, BudgetQuota, Task, TaskStatus
 from teamai.domain.ports import MessagePublisher, QueuePayload, ReplyTarget, TaskQueue
@@ -64,19 +66,31 @@ class FakeTaskRepository(TaskRepository):
             out = [t for t in out if t.status is status]
         return out
 
+    async def list_stale(self, statuses: Sequence[TaskStatus], before: datetime) -> list[Task]:
+        return [t for t in self.items.values() if t.status in statuses and t.updated_at < before]
 
 
 class FakeBudgetRepository(BudgetRepository):
-    def __init__(self, quota: BudgetQuota | None = None) -> None:
+    def __init__(self, quota: BudgetQuota | None = None, quotas: list[BudgetQuota] | None = None) -> None:
         self.quota = quota
         self.upserts = 0
+        # 周期重置巡检要遍历全部配额；单条场景仍可只传 quota
+        self.quotas: list[BudgetQuota] = quotas if quotas is not None else ([quota] if quota else [])
 
     async def get_for_channel(self, channel_instance_id: str) -> BudgetQuota | None:
         return self.quota
 
+    async def list_all(self) -> list[BudgetQuota]:
+        return list(self.quotas)
+
     async def upsert(self, quota: BudgetQuota) -> None:
         self.upserts += 1
         self.quota = quota
+        for i, q in enumerate(self.quotas):
+            if q.id == quota.id:
+                self.quotas[i] = quota
+                return
+        self.quotas.append(quota)
 
 
 class FakeMessagePublisher(MessagePublisher):

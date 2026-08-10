@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,5 +81,15 @@ class SQLTaskRepository(TaskRepository):
         stmt = select(TaskModel).where(TaskModel.channel_instance_id == channel_instance_id)
         if status is not None:
             stmt = stmt.where(TaskModel.status == status)
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_model_to_task(r) for r in rows]
+
+    async def list_stale(self, statuses: Sequence[TaskStatus], before: datetime) -> list[Task]:
+        if not statuses:
+            return []
+        stmt = select(TaskModel).where(
+            TaskModel.status.in_(list(statuses)),
+            TaskModel.updated_at < before,
+        )
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_model_to_task(r) for r in rows]
