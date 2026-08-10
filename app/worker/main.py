@@ -20,12 +20,18 @@ from teamai.container import Container, build_container
 from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload, ReplyTarget
 from teamai.infrastructure.db import init_db_or_warn
+from teamai.infrastructure.scheduler import scheduler
 
 logger = logging.getLogger(__name__)
 
-# 队列空转时的轮询间隔。RedisTaskQueue 用 LPOP 非阻塞取，
-# 故这里靠 sleep 控制空转频率；换成 BLPOP 后可去掉。
-IDLE_SLEEP_SECONDS = 1.0
+# 出队的阻塞等待上限。队列空时 BLPOP 挂住直到有任务或超时，故这不是轮询
+# 间隔，而是「最坏情况下多久醒来一次去查停止信号」：调大只影响收到 SIGTERM
+# 后的退出延迟，不影响取任务的及时性 —— 一有任务即刻返回。
+DEQUEUE_BLOCK_SECONDS = 5.0
+
+# 队列不可用时的重试间隔。这条路径上 dequeue 立即抛错、不会阻塞，
+# 故仍需显式 sleep，否则退化成忙循环。
+ERROR_RETRY_SECONDS = 1.0
 
 
 async def handle_payload(container: Container, payload: QueuePayload) -> None:
@@ -80,18 +86,26 @@ async def handle_payload(container: Container, payload: QueuePayload) -> None:
 
 
 async def run_worker(container: Container, stop: asyncio.Event) -> None:
-    """消费循环，直到 stop 被置位。"""
+    """消费循环，直到 stop 被置位。
+
+    出队用阻塞取：任务一入队就立刻被拿到，空转时也不再每秒打一次 Redis。
+    返回 None 只意味着「这段时间没活」，回到循环顶部重新检查 stop。
+
+    刻意不把 stop 与 dequeue 放进 asyncio.wait 抢跑：那样能秒退，但 stop 先到
+    时要 cancel 正在进行的 BLPOP —— 若 Redis 已弹出元素而客户端还没收到，这个
+    任务就凭空丢了（既不在队列里，也没被执行）。宁可多等至多
+    DEQUEUE_BLOCK_SECONDS 再退出，也不丢任务。
+    """
     logger.info("Worker 已启动，开始消费任务队列")
     while not stop.is_set():
         try:
-            payload = await container.queue.dequeue()
+            payload = await container.queue.dequeue(DEQUEUE_BLOCK_SECONDS)
         except ConnectionError as exc:
-            logger.warning(f"队列不可用，{IDLE_SLEEP_SECONDS}s 后重试: {exc}")
-            await _sleep_or_stop(stop, IDLE_SLEEP_SECONDS)
+            logger.warning(f"队列不可用，{ERROR_RETRY_SECONDS}s 后重试: {exc}")
+            await _sleep_or_stop(stop, ERROR_RETRY_SECONDS)
             continue
 
-        if payload is None:
-            await _sleep_or_stop(stop, IDLE_SLEEP_SECONDS)
+        if payload is None:  # 阻塞等待超时，无任务
             continue
 
         await handle_payload(container, payload)
@@ -115,8 +129,6 @@ def register_jobs(container: Container) -> None:
 
 
 async def _main() -> None:
-    from teamai.infrastructure.scheduler import scheduler
-
     await init_db_or_warn()
     container = build_container()
 

@@ -214,47 +214,56 @@ async def test_decision无文案时不回帖() -> None:
     assert c.publisher.replies == []
 
 
-async def test_消费循环_取空队列后可被stop打断() -> None:
+@pytest.fixture
+def fast_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 worker 的两个等待常量压到毫秒级，否则每个循环测试都要真等几秒。
+
+    DEQUEUE_BLOCK_SECONDS 传给 dequeue（FakeTaskQueue 自己也封了 0.01 上限）；
+    ERROR_RETRY_SECONDS 是队列报错后的重试间隔，那条路径走真 sleep，不压会
+    拖满一秒。
+    """
+    import app.worker.main as W
+
+    monkeypatch.setattr(W, "DEQUEUE_BLOCK_SECONDS", 0.01)
+    monkeypatch.setattr(W, "ERROR_RETRY_SECONDS", 0.01)
+
+
+async def _run_briefly(container: object, seconds: float = 0.05) -> None:
+    """起消费循环、跑一小会儿、置停止位并等它干净退出。"""
+    stop = asyncio.Event()
+    runner = asyncio.create_task(run_worker(container, stop))
+    await asyncio.sleep(seconds)
+    stop.set()
+    await asyncio.wait_for(runner, timeout=1.0)
+
+
+async def test_消费循环_取空队列后可被stop打断(fast_worker: None) -> None:
+    c = _container(_task(), _instance(), FakeRouter())
+    await _run_briefly(c)
+
+
+async def test_消费循环_处理队列中的载荷(fast_worker: None) -> None:
     router = FakeRouter()
     c = _container(_task(), _instance(), router)
-    stop = asyncio.Event()
-
-    import app.worker.main as W
-
-    original = W.IDLE_SLEEP_SECONDS
-    W.IDLE_SLEEP_SECONDS = 0.01
-    try:
-        runner = asyncio.create_task(run_worker(c, stop))
-        await asyncio.sleep(0.05)
-        stop.set()
-        await asyncio.wait_for(runner, timeout=1.0)
-    finally:
-        W.IDLE_SLEEP_SECONDS = original
-
-
-async def test_消费循环_处理队列中的载荷() -> None:
-    task = _task()
-    router = FakeRouter()
-    c = _container(task, _instance(), router)
     await c.queue.enqueue(_payload())
-    stop = asyncio.Event()
 
-    import app.worker.main as W
-
-    original = W.IDLE_SLEEP_SECONDS
-    W.IDLE_SLEEP_SECONDS = 0.01
-    try:
-        runner = asyncio.create_task(run_worker(c, stop))
-        await asyncio.sleep(0.05)
-        stop.set()
-        await asyncio.wait_for(runner, timeout=1.0)
-    finally:
-        W.IDLE_SLEEP_SECONDS = original
+    await _run_briefly(c)
 
     assert len(router.calls) == 1
 
 
-async def test_队列不可用_循环不崩溃() -> None:
+async def test_消费循环_出队必须带阻塞超时(fast_worker: None) -> None:
+    """不带超时就退化成忙循环打满 Redis，这是改用 BLPOP 的全部意义。"""
+    import app.worker.main as W
+
+    c = _container(_task(), _instance(), FakeRouter())
+    await _run_briefly(c)
+
+    assert c.queue.dequeue_timeouts, "未调用过 dequeue"
+    assert all(t == W.DEQUEUE_BLOCK_SECONDS for t in c.queue.dequeue_timeouts)
+
+
+async def test_队列不可用_循环不崩溃(fast_worker: None) -> None:
     """Redis 挂掉时 worker 应重试而非退出，否则要靠外部拉起。"""
 
     class BrokenQueue(FakeTaskQueue):
@@ -262,24 +271,13 @@ async def test_队列不可用_循环不崩溃() -> None:
             super().__init__()
             self.attempts = 0
 
-        async def dequeue(self):  # type: ignore[no-untyped-def]
+        async def dequeue(self, timeout_seconds: float = 0):  # type: ignore[no-untyped-def]
             self.attempts += 1
             raise ConnectionError("Redis 不可达（测试注入）")
 
     c = _container(_task(), _instance(), FakeRouter())
     c.queue = BrokenQueue()
-    stop = asyncio.Event()
 
-    import app.worker.main as W
-
-    original = W.IDLE_SLEEP_SECONDS
-    W.IDLE_SLEEP_SECONDS = 0.01
-    try:
-        runner = asyncio.create_task(run_worker(c, stop))
-        await asyncio.sleep(0.05)
-        stop.set()
-        await asyncio.wait_for(runner, timeout=1.0)
-    finally:
-        W.IDLE_SLEEP_SECONDS = original
+    await _run_briefly(c)
 
     assert c.queue.attempts >= 1

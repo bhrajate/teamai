@@ -108,23 +108,21 @@ async def test_全链路_入队后由worker执行并回帖() -> None:
     ]
 
 
-async def test_全链路_经消费循环跑通() -> None:
-    """不手工 dequeue，走 run_worker 的真实轮询路径。"""
+async def test_全链路_经消费循环跑通(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不手工 dequeue，走 run_worker 的真实消费路径。"""
     rig = Rig()
     await rig.router.route(mention())
 
     import app.worker.main as W
 
+    monkeypatch.setattr(W, "DEQUEUE_BLOCK_SECONDS", 0.01)
+    monkeypatch.setattr(W, "ERROR_RETRY_SECONDS", 0.01)
+
     stop = asyncio.Event()
-    original = W.IDLE_SLEEP_SECONDS
-    W.IDLE_SLEEP_SECONDS = 0.01
-    try:
-        runner = asyncio.create_task(run_worker(rig.container, stop))
-        await asyncio.sleep(0.05)
-        stop.set()
-        await asyncio.wait_for(runner, timeout=1.0)
-    finally:
-        W.IDLE_SLEEP_SECONDS = original
+    runner = asyncio.create_task(run_worker(rig.container, stop))
+    await asyncio.sleep(0.05)
+    stop.set()
+    await asyncio.wait_for(runner, timeout=1.0)
 
     assert rig.runtime.runs == 1
     assert rig.task.status is TaskStatus.DONE

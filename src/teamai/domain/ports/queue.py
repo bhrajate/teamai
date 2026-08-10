@@ -30,6 +30,15 @@ class TaskQueue(ABC):
         ...
 
     @abstractmethod
-    async def dequeue(self) -> QueuePayload | None:
-        """弹出一个任务；空队列返回 None。"""
+    async def dequeue(self, timeout_seconds: float = 0) -> QueuePayload | None:
+        """弹出一个任务；无任务时返回 None。
+
+        timeout_seconds > 0 表示阻塞等待至多这么久（实现方可用 BLPOP 之类的
+        阻塞原语），期间一有任务入队就立即返回；0 表示不等待，立即返回。
+
+        端口层暴露超时而非让调用方自己 sleep 轮询：轮询的延迟下限就是轮询
+        间隔，且空转期间仍在不停打 Redis。阻塞取把「取任务的延迟」与「空转
+        开销」同时降下来，而超时上限的存在保证调用方仍能周期性醒来检查停止
+        信号。
+        """
         ...
