@@ -52,4 +52,6 @@ class SQLPolicyRepository(PolicyRepository):
         return _model_to_policy(m) if m else None
 
     async def upsert(self, policy: PermissionPolicy) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明。
         await self._session.merge(_policy_to_model(policy))
+        await self._session.commit()

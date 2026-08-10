@@ -64,4 +64,7 @@ class SQLChannelRepository(ChannelRepository):
         return _model_to_channel(m) if m else None
 
     async def upsert(self, instance: ChannelInstance) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明。频道实例尤其要落盘：
+        # worker 靠 channel_instance_id 取实例拼回帖目标。
         await self._session.merge(_channel_to_model(instance))
+        await self._session.commit()

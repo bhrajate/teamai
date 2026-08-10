@@ -61,7 +61,9 @@ class SQLMemoryRepository(MemoryRepository):
         self._session = session
 
     async def store(self, entry: MemoryEntry) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明。
         self._session.add(_memory_to_model(entry))
+        await self._session.commit()
 
     async def list_by_channel(self, channel_instance_id: str) -> list[MemoryEntry]:
         stmt = select(MemoryEntryModel).where(MemoryEntryModel.channel_instance_id == channel_instance_id)
@@ -76,9 +78,11 @@ class SQLMemoryRepository(MemoryRepository):
         m = await self._session.get(MemoryEntryModel, entry_id)
         if m:
             await self._session.delete(m)
+            await self._session.commit()
 
     async def set_preference(self, pref: Preference) -> None:
         self._session.add(_preference_to_model(pref))
+        await self._session.commit()
 
     async def list_preferences(self, channel_instance_id: str) -> list[Preference]:
         stmt = select(PreferenceModel).where(PreferenceModel.channel_instance_id == channel_instance_id)

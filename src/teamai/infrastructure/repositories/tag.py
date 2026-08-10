@@ -45,7 +45,9 @@ class SQLTagRepository(TagRepository):
         self._session = session
 
     async def create(self, tag: TagTemplate) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明。
         self._session.add(_tag_to_model(tag))
+        await self._session.commit()
 
     async def get(self, channel_instance_id: str, name: str) -> TagTemplate | None:
         stmt = select(TagTemplateModel).where(
@@ -64,8 +66,10 @@ class SQLTagRepository(TagRepository):
         m = await self._session.get(TagTemplateModel, tag_id)
         if m:
             await self._session.delete(m)
+            await self._session.commit()
 
     async def set_active(self, tag_id: str, active: bool) -> None:
         m = await self._session.get(TagTemplateModel, tag_id)
         if m:
             m.active = active
+            await self._session.commit()

@@ -47,14 +47,28 @@ def _model_to_task(m: TaskModel) -> Task:
 
 
 class SQLTaskRepository(TaskRepository):
+    """任务仓储。
+
+    写方法各自 commit：容器持有单个共享 session，若不提交则改动只留在该
+    session 的 identity map 里 —— 同进程内读得到，别的进程读不到。长任务
+    链路正是跨进程的（web 入队、worker 消费），不提交则 worker 一律报
+    「任务不存在」。
+
+    代价是「建任务」与「写审计」落在两个事务里，中途崩溃可能留下无审计的
+    任务。这与既有取舍一致（入队失败也不回滚已落库的任务）；要做到整条
+    消息一个事务，得引入 UnitOfWork 或改 session-per-task。
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def create(self, task: Task) -> None:
         self._session.add(_task_to_model(task))
+        await self._session.commit()
 
     async def update(self, task: Task) -> None:
         await self._session.merge(_task_to_model(task))
+        await self._session.commit()
 
     async def get(self, task_id: str) -> Task | None:
         m = await self._session.get(TaskModel, task_id)

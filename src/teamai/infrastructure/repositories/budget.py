@@ -49,4 +49,7 @@ class SQLBudgetRepository(BudgetRepository):
         return _model_to_budget(m) if m else None
 
     async def upsert(self, quota: BudgetQuota) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明。预算消耗必须落盘，
+        # 否则两个进程各按自己未提交的余额判配额，等于没有上限。
         await self._session.merge(_budget_to_model(quota))
+        await self._session.commit()

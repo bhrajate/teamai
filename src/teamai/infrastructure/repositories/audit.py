@@ -48,7 +48,9 @@ class SQLAuditRepository(AuditRepository):
         self._session = session
 
     async def append(self, log: AuditLog) -> None:
+        # 提交理由见 SQLTaskRepository 的类说明：共享 session 不提交则跨进程不可见。
         self._session.add(_audit_to_model(log))
+        await self._session.commit()
 
     async def list_by_channel(self, channel_instance_id: str, limit: int = 100) -> list[AuditLog]:
         stmt = (
