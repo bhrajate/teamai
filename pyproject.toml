@@ -20,13 +20,16 @@ dependencies = [
     "sqlalchemy>=2.0",
     # 飞书回调的 AES 解密与签名校验（adapters/feishu/crypto.py）
     "cryptography>=42.0",
-    # 飞书 SDK：事件长连接、消息回复
-    "lark-oapi>=1.4.15",
+    # 飞书 SDK：事件长连接、消息回复。
+    # 下界必须 >=1.6.0：adapters/feishu/connector.py 用的
+    # lark_oapi.channel.bot_identity.fetch_bot_identity 是 1.6.0 才有的
+    # （1.4.x / 1.5.x 的 wheel 里没有 lark_oapi/channel/ 这个包），
+    # 放宽到 1.5.x 会在 import 时炸。
+    "lark-oapi>=1.6.0",
     "asyncpg>=0.29",
     "redis>=5.0",
     "apscheduler>=3.10",
     "qdrant-client>=1.12",
-    "lark-oapi>=1.4.15",
     "alembic>=1.13",
 ]
 

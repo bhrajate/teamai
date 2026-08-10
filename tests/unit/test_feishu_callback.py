@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import hashlib
 import json
 import os
@@ -150,6 +151,42 @@ class TestFeishuCallback:
         assert len(dispatcher.dispatched) == 1
         assert dispatcher.dispatched[0].platform == "feishu"
         assert dispatcher.dispatched[0].event_id == "feishu:ev_1"
+
+    async def test_派发中的任务被强引用住(self) -> None:
+        """事件循环对 task 只持弱引用，handler 必须自己存一份，否则任务可能被 GC。
+
+        用一个等信号的 dispatch 卡住任务，观察 handler 返回后 _pending 里仍有
+        它；放行并跑完后自动摘除，不会越积越多。
+        """
+        released = asyncio.Event()
+        done = False
+
+        async def slow_dispatch(msg: IncomingMessage) -> None:
+            nonlocal done
+            await released.wait()
+            done = True
+
+        handler = FeishuCallbackHandler(
+            slow_dispatch,
+            InMemoryEventDeduplicator(),
+            encrypt_key=ENCRYPT_KEY,
+            verification_token=VERIFICATION_TOKEN,
+            bot_open_id="ou_bot123",
+        )
+        resp = await handler.handle(_request(json.dumps(_event_body())))
+        assert resp.status_code == 200
+        await asyncio.sleep(0)  # 让任务起跑并停在 released.wait()
+
+        assert len(handler._pending) == 1, "派发中的任务必须被强引用住"
+        # 顺带确认这份引用扛得住一轮 GC
+        gc.collect()
+        assert len(handler._pending) == 1
+
+        released.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)  # 一轮唤醒 wait()，一轮跑 done_callback
+        assert done, "任务应跑到完成"
+        assert handler._pending == set(), "跑完后应从 _pending 摘除"
 
     async def test_重投事件被去重拦截(self) -> None:
         dispatcher = FakeDispatcher()

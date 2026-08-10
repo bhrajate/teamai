@@ -56,6 +56,9 @@ class FeishuCallbackHandler:
         self._verification_token = verification_token
         # 连接器 startup 时拉取 bot 身份后回填
         self.bot_open_id = bot_open_id
+        # 派发中的后台任务。事件循环对 task 只持弱引用，不在这里存一份强引用，
+        # 任务可能在执行到一半时被 GC 掉，消息静默消失（asyncio 官方文档明示）。
+        self._pending: set[asyncio.Task[None]] = set()
 
     async def handle(self, request: Request) -> Response:
         body_bytes = await request.body()
@@ -92,7 +95,6 @@ class FeishuCallbackHandler:
                 return JSONResponse(status_code=401, content={"code": 401, "msg": "invalid signature"})
 
         # ⑤ 只处理 im.message.receive_v1，其余事件类型回 200 忽略
-        header = payload.get("header")
         if not isinstance(header, dict) or header.get("event_type") != "im.message.receive_v1":
             return JSONResponse(content={"code": 0, "msg": "success"})
         event_id = header.get("event_id")
@@ -108,5 +110,8 @@ class FeishuCallbackHandler:
         # ⑦ 翻译 + 后台任务处理，立即回 200
         msg = to_incoming(P2ImMessageReceiveV1(payload), self.bot_open_id)
         if msg is not None:
-            asyncio.create_task(self._dispatch(msg))
+            task = asyncio.create_task(self._dispatch(msg), name=f"feishu-dispatch-{key}")
+            # 存住强引用直到跑完，见 _pending 的说明
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
         return JSONResponse(content={"code": 0, "msg": "success"})
