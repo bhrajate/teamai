@@ -9,6 +9,7 @@ APScheduler 会把它丢进线程池、拿到一个从未被 await 的协程对�
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ import pytest
 from apscheduler.util import iscoroutinefunction_partial
 
 import app.worker.main as W
+from teamai.application.orchestrator import SweepReport
 from teamai.domain.models import Task, TaskStatus
 from teamai.infrastructure.scheduler import Scheduler
 
@@ -37,18 +39,23 @@ class FakeBudget:
 
 
 class FakeOrchestrator:
-    def __init__(self, swept: list[Task] | None = None, raises: Exception | None = None) -> None:
-        self.swept = swept or []
+    def __init__(
+        self,
+        swept: list[Task] | None = None,
+        failed: list[tuple[str, str]] | None = None,
+        raises: Exception | None = None,
+    ) -> None:
+        self.report = SweepReport(swept=swept or [], failed=failed or [])
         self.raises = raises
         self.calls: list[tuple[timedelta, timedelta]] = []
 
     async def sweep_stale_tasks(
         self, pending_timeout: timedelta, running_timeout: timedelta, now: object = None
-    ) -> list[Task]:
+    ) -> SweepReport:
         self.calls.append((pending_timeout, running_timeout))
         if self.raises is not None:
             raise self.raises
-        return self.swept
+        return self.report
 
 
 def _container(budget: FakeBudget | None = None, orch: FakeOrchestrator | None = None) -> SimpleNamespace:
@@ -180,7 +187,7 @@ async def test_巡检job吞掉异常(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(orch.calls) == 1
 
 
-async def test_巡检job记录被收掉的任务(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_巡检job记录被收掉的任务(monkeypatch: pytest.MonkeyPatch, caplog) -> None:  # type: ignore[no-untyped-def]
     task = Task(
         id="task_x",
         channel_instance_id="ch1",
@@ -192,9 +199,27 @@ async def test_巡检job记录被收掉的任务(monkeypatch: pytest.MonkeyPatch
     orch = FakeOrchestrator(swept=[task])
     _patch_job_scope(monkeypatch, FakeBudget(), orch)
 
-    await W.sweep_stale_tasks(_container())
+    with caplog.at_level(logging.WARNING):
+        await W.sweep_stale_tasks(_container())
 
     assert len(orch.calls) == 1
+    assert "task_x" in caplog.text
+
+
+async def test_巡检job把推进失败记为error(monkeypatch: pytest.MonkeyPatch, caplog) -> None:  # type: ignore[no-untyped-def]
+    """失败必须以 ERROR 现身。
+
+    只看 swept 的话，「找到 5 个全都推进失败」与「一个都没卡住」在日志里长得
+    一样 —— 曾因两个 job 共用 AsyncSession 撞 InterfaceError 而整段隐形。
+    """
+    orch = FakeOrchestrator(failed=[("task_bad", "another operation is in progress")])
+    _patch_job_scope(monkeypatch, FakeBudget(), orch)
+
+    with caplog.at_level(logging.ERROR):
+        await W.sweep_stale_tasks(_container())
+
+    assert "task_bad" in caplog.text
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), "推进失败必须记为 ERROR"
 
 
 async def test_两个job各自独立scope(monkeypatch: pytest.MonkeyPatch) -> None:

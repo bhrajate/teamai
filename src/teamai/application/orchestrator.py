@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from teamai.domain.identity import gen_id
@@ -20,6 +21,23 @@ _SWEEPER_ACTOR = "system:timeout-sweeper"
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass
+class SweepReport:
+    """超时巡检的结果。
+
+    分开记成功与失败，而不是只返回处理成功的那些：巡检对每个任务单独兜异常，
+    若失败只写日志不进返回值，调用方就无法区分「没有卡住的任务」和「找到了但
+    全都没推进成功」—— 后者是故障，前者是正常。
+    """
+
+    swept: list[Task] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)  # (task_id, 错因)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
 
 
 class TaskOrchestrator:
@@ -91,8 +109,8 @@ class TaskOrchestrator:
         pending_timeout: timedelta,
         running_timeout: timedelta,
         now: datetime | None = None,
-    ) -> list[Task]:
-        """把卡死的任务收敛到 FAILED，返回被处理的任务。
+    ) -> SweepReport:
+        """把卡死的任务收敛到 FAILED。
 
         两类卡死分别给阈值：PENDING 是「入队了没人取」（队列正常时秒级出队，
         久了说明 worker 全挂或载荷坏了）；RUNNING 是「取走了没结果」（长任务
@@ -101,10 +119,14 @@ class TaskOrchestrator:
         没有这道巡检，worker 崩溃时正在执行的任务会永久停在 RUNNING：既不
         重投也不失败，发起人等不到任何回复，Admin 里也看不出它已经死了。
 
-        单条失败不打断整轮：一个任务的状态机异常不该让其余任务继续挂着。
+        单条失败不打断整轮：一个任务的状态机异常不该让其余任务继续挂着。但失败
+        必须出现在返回值里 —— 只 log 不上报的话，「一个都没卡住」与「找到 5 个
+        全都推进失败」对调用方是同一个结果。这不是假想：曾因两个定时任务共用
+        一个 AsyncSession，巡检的每次 transition 都撞 InterfaceError，而本方法
+        返回空列表、job 照报成功，故障整段隐形。
         """
         moment = now or _utcnow()
-        swept: list[Task] = []
+        report = SweepReport()
         for statuses, timeout in (
             ((TaskStatus.PENDING,), pending_timeout),
             ((TaskStatus.RUNNING,), running_timeout),
@@ -112,11 +134,12 @@ class TaskOrchestrator:
             for task in await self._repo.list_stale(statuses, moment - timeout):
                 try:
                     await self.transition(task, TaskStatus.FAILED, actor=_SWEEPER_ACTOR)
-                except Exception as exc:  # pragma: no cover - 状态机兜底
+                except Exception as exc:
                     logger.warning(f"超时巡检推进失败 {task.id}: {exc}")
+                    report.failed.append((task.id, str(exc)))
                     continue
-                swept.append(task)
-        return swept
+                report.swept.append(task)
+        return report
 
     async def enqueue(self, task: Task, prompt: str = "") -> None:
         """把已落库的任务投进长任务队列，交 worker 执行。

@@ -48,7 +48,9 @@ def rig() -> tuple[TaskOrchestrator, FakeTaskRepository, FakeAuditRepository]:
 
 
 async def _sweep(orch: TaskOrchestrator) -> list[Task]:
-    return await orch.sweep_stale_tasks(PENDING_TIMEOUT, RUNNING_TIMEOUT, now=NOW)
+    """取被收掉的任务列表；失败项另有断言专门覆盖。"""
+    report = await orch.sweep_stale_tasks(PENDING_TIMEOUT, RUNNING_TIMEOUT, now=NOW)
+    return report.swept
 
 
 # ===== 该被收掉的 =====
@@ -152,22 +154,68 @@ async def test_巡检写审计且actor标明系统(rig) -> None:  # type: ignore
     assert log.user_id == "system:timeout-sweeper"
 
 
+def _break(task: Task, reason: str = "状态机炸了（测试注入）") -> None:
+    """让某个任务的状态迁移抛异常。"""
+
+    def _boom(to: TaskStatus, actor: str) -> None:
+        raise RuntimeError(reason)
+
+    task.transition = _boom  # type: ignore[method-assign]
+
+
 async def test_单条失败不打断整轮(rig) -> None:  # type: ignore[no-untyped-def]
     """一个任务的状态机异常不该让其余任务继续挂着。"""
     orch, repo, _ = rig
     bad = _task(TaskStatus.RUNNING, updated_ago=timedelta(days=2), tid="t_bad")
     good = _task(TaskStatus.RUNNING, updated_ago=timedelta(days=2), tid="t_good")
     repo.items.update({bad.id: bad, good.id: good})
-
-    def _boom(to: TaskStatus, actor: str) -> None:
-        raise RuntimeError("状态机炸了（测试注入）")
-
-    bad.transition = _boom  # type: ignore[method-assign]
+    _break(bad)
 
     swept = await _sweep(orch)
 
     assert [t.id for t in swept] == ["t_good"]
     assert good.status is TaskStatus.FAILED
+
+
+async def test_失败项必须出现在返回值里(rig) -> None:  # type: ignore[no-untyped-def]
+    """只 log 不上报的话，「没有卡住的任务」与「找到了但全都推进失败」无法区分。
+
+    这不是假想：两个定时任务曾共用一个 AsyncSession，巡检的每次 transition 都撞
+    InterfaceError，而本方法只返回空列表、job 照报成功，故障整段隐形。
+    """
+    orch, repo, _ = rig
+    stuck = _task(TaskStatus.RUNNING, updated_ago=timedelta(days=2), tid="t_stuck")
+    repo.items[stuck.id] = stuck
+    _break(stuck, "another operation is in progress")
+
+    report = await orch.sweep_stale_tasks(PENDING_TIMEOUT, RUNNING_TIMEOUT, now=NOW)
+
+    assert report.swept == [], "推进失败的任务不该算作已收掉"
+    assert [tid for tid, _ in report.failed] == ["t_stuck"]
+    assert "another operation is in progress" in report.failed[0][1]
+    assert report.ok is False, "有失败项时 ok 必须为 False"
+
+
+async def test_全部成功时报告为ok(rig) -> None:  # type: ignore[no-untyped-def]
+    orch, repo, _ = rig
+    task = _task(TaskStatus.RUNNING, updated_ago=timedelta(days=2))
+    repo.items[task.id] = task
+
+    report = await orch.sweep_stale_tasks(PENDING_TIMEOUT, RUNNING_TIMEOUT, now=NOW)
+
+    assert report.ok is True
+    assert report.failed == []
+    assert len(report.swept) == 1
+
+
+async def test_无任务时报告为空且ok(rig) -> None:  # type: ignore[no-untyped-def]
+    """「什么都没找到」也是 ok —— 与「找到了但失败」必须能区分开。"""
+    orch, _, _ = rig
+
+    report = await orch.sweep_stale_tasks(PENDING_TIMEOUT, RUNNING_TIMEOUT, now=NOW)
+
+    assert report.ok is True
+    assert report.swept == []
 
 
 async def test_无任务时空转(rig) -> None:  # type: ignore[no-untyped-def]

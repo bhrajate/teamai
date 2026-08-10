@@ -187,11 +187,17 @@ class JobScope:
 async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
     """为一次定时任务运行开一个独立 session，用完即关。
 
-    不复用 Container 那个共享 session：AsyncSession 不允许并发使用，而定时任务
-    与消费循环跑在同一个事件循环上。共用会撞出
-    「This session is provisioning a new connection; concurrent operations are
-    not permitted」或「This transaction is closed」——实测两个同间隔的 job 一起
-    触发时，写库成功了但紧随其后的审计写入失败，留下没有留痕的状态变更。
+    这里每次都调一次工厂，故每次运行拿到的是新 session —— 与 build_container()
+    不同：那边虽然也取的是工厂（get_session_factory 返回 async_sessionmaker），
+    但只调用了一次，把同一个实例交给全部 7 个仓储。所以 container.budget 与
+    container.orchestrator 底下是同一个 session 对象。
+
+    而 AsyncSession 不允许并发使用，定时任务又与消费循环跑在同一个事件循环上。
+    共用会撞出「another operation is in progress」/「This session is in
+    'prepared' state」/「This transaction is closed」。实测两个同间隔的 job 一起
+    触发时，一个 job 写库成功、另一个的每次状态迁移全部失败 —— 而巡检对单条
+    任务兜了异常，于是它返回空结果、job 照报成功，故障整段隐形（这也是
+    SweepReport 要把失败项带回来的原因）。
 
     只装 job 真正要用的两样东西，不整个 build_container()：后者还会新建 Redis
     连接池与各平台 publisher，每次巡检都建一套等于按巡检频率泄漏连接。queue

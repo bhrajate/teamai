@@ -125,8 +125,9 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
 async def reset_budget_periods(container: Container) -> None:
     """预算周期重置。
 
-    经 open_job_scope 拿独立 session：定时任务与消费循环同在一个事件循环上，
-    共用容器那个 session 会并发撞车（详见 open_job_scope 的说明）。
+    经 open_job_scope 每次开一个新 session。容器那个不能用：build_container 只
+    调了一次 session 工厂，全部仓储共用同一个实例，而两个 job 同间隔触发时会
+    并发碰它（详见 open_job_scope 的说明）。
 
     异常不外抛：定时任务抛出去没人接，只会污染 scheduler 的日志。
     """
@@ -140,15 +141,23 @@ async def reset_budget_periods(container: Container) -> None:
 
 
 async def sweep_stale_tasks(container: Container) -> None:
-    """任务超时巡检。独立 session 与异常兜底的理由同上。"""
+    """任务超时巡检。独立 session 与异常兜底的理由同上。
+
+    失败单独记 error：巡检对每个任务分别兜异常，若只看 swept 就会把「找到 5 个
+    全都推进失败」当成「一个都没卡住」。
+    """
     try:
         async with open_job_scope(container) as scope:
-            swept = await scope.orchestrator.sweep_stale_tasks(
+            report = await scope.orchestrator.sweep_stale_tasks(
                 pending_timeout=timedelta(minutes=settings.jobs_pending_timeout_minutes),
                 running_timeout=timedelta(minutes=settings.jobs_running_timeout_minutes),
             )
-        if swept:
-            logger.warning(f"超时巡检: {len(swept)} 个任务判为 FAILED: {[t.id for t in swept]}")
+        if report.swept:
+            logger.warning(
+                f"超时巡检: {len(report.swept)} 个任务判为 FAILED: {[t.id for t in report.swept]}"
+            )
+        if report.failed:
+            logger.error(f"超时巡检有 {len(report.failed)} 个任务未能推进: {report.failed}")
     except Exception as exc:
         logger.error(f"超时巡检失败: {exc}")
 
