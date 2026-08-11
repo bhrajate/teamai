@@ -39,6 +39,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
     "ruff>=0.6",
+    # 仓储层的真 SQL 行为测试用内存 SQLite。生产走 asyncpg，但「merge 按主键
+    # 匹配、故换 id 就是 INSERT」这类语义与方言无关，用 SQLite 验足够且不必起容器。
+    "aiosqlite>=0.20",
 ]
 
 [build-system]

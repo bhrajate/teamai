@@ -8,8 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from teamai.adapters.admin.serializers import budget_to_dict
 from teamai.container import Container
-from teamai.domain.identity import gen_id
-from teamai.domain.models import BudgetPeriod, BudgetQuota, BudgetScope
+from teamai.domain.models import BudgetPeriod
 
 
 def build_budget_router(container: Container) -> APIRouter:
@@ -24,17 +23,29 @@ def build_budget_router(container: Container) -> APIRouter:
 
     @router.put("/channels/{channel_instance_id}/budget")
     async def set_budget(channel_instance_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        token_limit = int(body.get("token_limit", 0))
+        """设定配额。已配过则原地改上限与周期，用量不清零（见 configure_channel_quota）。"""
+        try:
+            token_limit = int(body.get("token_limit", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="token_limit 必须为正整数") from None
         if token_limit <= 0:
             raise HTTPException(status_code=400, detail="token_limit 必须为正整数")
-        quota = BudgetQuota(
-            id=gen_id("bq"),
-            scope=BudgetScope.CHANNEL,
-            token_limit=token_limit,
-            period=BudgetPeriod(body.get("period", "MONTHLY")),
-            channel_instance_id=channel_instance_id,
+
+        raw_period = body.get("period", "MONTHLY")
+        try:
+            period = BudgetPeriod(raw_period)
+        except ValueError:
+            allowed = "、".join(p.value for p in BudgetPeriod)
+            raise HTTPException(
+                status_code=400, detail=f"period 取值须为 {allowed}，收到 {raw_period!r}"
+            ) from None
+
+        quota = await container.budget.configure_channel_quota(
+            channel_instance_id,
+            token_limit,
+            period,
+            actor=body.get("actor"),
         )
-        await container.budget.set_quota(quota)
         return budget_to_dict(quota)
 
     return router
