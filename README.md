@@ -12,7 +12,11 @@
 - **预算与审计**：按频道核算 token 配额，超限暂停；每个动作留审计记录
 - **权限策略**：按频道白名单控制可用工具
 
-未实现：Ambient Mode 主动介入、对话标签模板复用、端到端评测集（`docs/tasklist.md` 第 11 / 12 / 13 项）。
+- **主动介入**：按频道规则在无人 @ 时开口，例如提醒沉寂的线程。两级开关（频道总闸 + 策略里的规则）都开才生效
+- **标签模板**：把角色、指令、输出风格存成可复用的配置，在频道里按名激活
+- **管理控制台**：`web/` 下的前端，管上面这些配置并看任务与审计
+
+未实现：端到端评测集（`docs/tasklist.md` 第 13 项）。标签的 `shared` 字段目前是空壳 —— 存得下、读得出，但没有任何跨频道共享语义。
 
 ## 快速开始
 
@@ -126,12 +130,92 @@ worker 里两个定时任务都不可缺：预算周期重置（否则耗尽配�
 | 方法与路径 | 用途 |
 |---|---|
 | `GET /api/health` | 健康检查 |
+| `GET /api/channels`、`GET/PATCH /api/channels/{id}` | 频道实例：列举、详情、改频道级开关 |
+| `GET /api/tools` | 已注册的工具名，供策略编辑器出选项 |
 | `GET/POST /api/channels/{id}/memories`、`DELETE /api/memories/{entry_id}` | 频道记忆 |
 | `GET/PUT /api/channels/{id}/budget` | token 预算 |
 | `GET/PUT /api/channels/{id}/policy` | 权限策略 |
 | `GET /api/channels/{id}/tasks` | 任务查询 |
 | `GET /api/channels/{id}/audit` | 审计查询 |
-| `GET/POST /api/channels/{id}/tags` | 标签 |
+| `GET/POST /api/channels/{id}/tags`、`PATCH/DELETE /api/channels/{id}/tags/{tag_id}` | 标签：列举、创建、启停、删除 |
+
+未配预算或策略的频道，对应的 `GET` 返回 404 —— 那表示「还没配」，不是故障。
+
+`PUT /budget` 是原地更新：只改上限与周期，已用量与本周期起点都保留；若新上限高于已用量，会把 `EXHAUSTED` 放回 `ACTIVE`（调高上限的意图就是让频道重新可用，否则还得等下个周期的定时重置）。
+
+### 鉴权
+
+配了 `ADMIN_API_TOKEN`（在 `.env`）则资源路由一律要求 `Authorization: Bearer <token>`，留空则全部匿名可用。`/api/health` 有意不在保护范围内，好让探针与 `make verify-*` 匿名可打。
+
+留空是有风险的默认：`/api` 上挂着完整审计日志、频道记忆，以及**可写**的预算配额与工具白名单，而 `admin_api.host` 默认 `0.0.0.0`。公网或办公网可达时务必配上。
+
+注意它不是登录 —— 后端只认这一个共享令牌，没有用户概念，因而无法按人区分权限或单独吊销。要那些能力得先引入会话与用户模型。
+
+## 管理控制台
+
+`web/` 下是一个独立的前端工程（Vite + React + TypeScript + Ant Design），消费上面那套 Admin API。需要 node ≥ 20。
+
+```bash
+make web-install    # 装依赖
+make web-dev        # dev server（:5173，/api 代到本机 8000）
+make web-build      # 构建到 web/dist
+make web-check      # 类型检查 + 各页面渲染冒烟
+```
+
+本地开发不必配 CORS：dev server 把 `/api` 代到后端，前后端同源。后端没起也能开页面，只是各页面会显示「连不上后端」。
+
+### 页面
+
+顶栏切频道，侧栏走资源页。信息架构直接照 API 长 —— 十二条路径里有九条挂在 `/channels/{channel_instance_id}` 下（其余三条是 `/health`、`/tools` 与按条目 id 删记忆），所以先选频道，再选看什么。
+
+| 页面 | 能做什么 |
+|---|---|
+| 频道实例 | 列出全部实例。实例由平台事件自动创建，此处只读 |
+| 概览 | 身份、行为开关（主动介入 / 跨频道学习）、任务与预算摘要 |
+| 任务 | 任务列表。只读 —— 状态机有合法迁移表，绕过它改会改出非法态 |
+| 记忆 | 增删频道记忆。错的记忆要能删，重要背景要能手工补 |
+| 预算 | 看用量、改上限与周期 |
+| 权限策略 | 工具白名单（选项来自 `GET /api/tools`）、主动介入规则 |
+| 标签 | 标签模板的增删与启停 |
+| 审计 | 审计流水，可按动作与结果筛选，详情看 `detail` |
+| 设置 | 填 Admin API 令牌 |
+
+令牌存浏览器的 localStorage，不打进构建产物 —— 产物是静态文件，任何访客都能下载。这也意味着同机器的其他人能从 devtools 里读到它，对内网管理后台是可接受的折中。
+
+### 前后端的对齐约束
+
+`web/src/api/index.ts` 按资源分组，组名即 `adapters/admin/` 下的模块名；`web/src/api/types.ts` 与 `adapters/admin/serializers.py` 逐字段对应，各 union 的取值抄自 `domain/models/` 里的 Enum。
+
+**这层对齐只能靠人守。** 后端路由的返回类型是 `dict[str, Any]`，OpenAPI schema 里没有响应形状，故字段名写错不会有编译错误，只会在页面上显示 `undefined`。改了 `serializers.py` 就得同步改 `types.ts`，反之亦然。
+
+枚举值到中文标签的映射集中在 `web/src/components/tags.tsx`，用 `satisfies Record<X, ...>` 约束 —— 后端加了枚举值而前端漏补时会直接编译报错，而不是在页面上露出英文原文。
+
+### 渲染冒烟
+
+`npm run smoke`（含在 `make web-check` 里）把每个页面在 Node 里服务端渲染一遍。
+
+`vite build` 只保证编译过，抓不到运行时问题 —— 缺失导出、循环导入、渲染期就抛的错，全都编译得过但一跑就白屏。这个探针也会把 AntD 的废弃 prop 警告打出来，跨大版本升级时尤其有用（`Drawer` 的 `width` 改 `size` 就是它报出来的）。
+
+**它只覆盖首帧。** SSR 不执行 `useEffect`，而取数都在 `useAsync` 的 effect 里，所以数据页渲染出的是骨架屏 —— 表格、抽屉、空态这些分支一个都没走到。从字符数就能看出来：数据驱动的概览页 796 字符、策略页 635 字符，而纯静态的设置页 8608 字符。
+
+要覆盖数据分支得换 jsdom：真实挂载 + 打桩 fetch + 等 effect 落定。那样才能验「有数据时表格渲染得出来」，代价是多一层 jsdom 依赖与 `act()` 的时序处理（嵌套的 AsyncBoundary 要多轮 tick 才稳定）。当前没做。
+
+### 独立部署
+
+`make web-build` 的产物是纯静态文件，托管在哪都行。与 API 不同源时要配两处，缺任一处页面都取不到数据：
+
+```yaml
+# config/config.yaml —— 放行前端来源，否则浏览器拦掉全部 /api 请求
+admin_api:
+  cors_origins: https://teamai-console.example.com
+```
+
+```bash
+# web/.env.local —— 指向 API 的域。同源部署则留空，走相对路径 /api
+VITE_API_BASE_URL=https://teamai-api.example.com
+```
+
+`deploy/nginx.conf.example` 是一份可用的托管配置，其中 `try_files ... /index.html` 这条不能省：前端用 BrowserRouter，`/channels/ch_xxx/audit` 在磁盘上没有对应文件，不回退的话用户在子路由上按刷新就是 404。首次进入不会触发（都从 `/` 跳转），只有刷新和直接贴链接会炸，因此很容易漏到上线后才发现。
 
 ## 开发
 

@@ -81,16 +81,17 @@
 
 - [ ]* 10.1 编写 Admin API 路由契约测试
 
-- [ ] 11. 实现 Ambient Mode 主动介入
-   - 实现 ambient 规则引擎（thread_stale 沉寂线程提醒、异常事件监测、CI/部署状态通知）
-   - 实现频道级开关与规则配置（接入 PermissionService 的 ambientRules）
+- [~] 11. 实现 Ambient Mode 主动介入（规则引擎与开关已完成，三类触发器只落地一条）
+   - 规则引擎骨架已完成（`application/ambient.py`），按 `trigger` 注册处理器
+   - **thread_stale 已实现**（沉寂线程提醒，含冷却）。**异常事件监测、CI/部署状态通知未实现** —— 这两类要先有事件来源（监控 webhook、CI 回调），不只是加个 handler
+   - 频道级开关与规则配置已完成：两级开关（`ChannelInstance.ambient_enabled` 总闸 + `PermissionPolicy.ambient_rules` 逐条规则），控制台的概览页与策略页都可改
    - 参考 Design-claude-tag.md §3.10 与 PRD §4.3
 
-- [ ]* 11.1 编写 Ambient 规则触发/误报的合成事件测试
+- [x] 11.1 编写 Ambient 规则触发/误报的合成事件测试（`tests/unit/test_ambient.py`：两级开关、阈值、冷却、失败隔离；重点验「不该打扰时确实不打扰」）
 
-- [ ] 12. 实现对话标签模板复用
-   - 实现标签 CRUD（创建/激活/删除/共享）
-   - 实现标签激活时按预设指令/角色/风格执行（接入 TagResolver 与 AgentRuntime）
+- [x] 12. 实现对话标签模板复用
+   - 标签 CRUD：创建/激活/删除已完成（`adapters/admin/tag.py` + 控制台标签页）。**「共享」未实现** —— `TagTemplate.shared` 默认 True，除存取之外从未被读作任何条件，也没有端点能改它；要做跨频道共享须先定清语义（谁可见、按什么隔离）
+   - 标签激活时按预设指令/角色/风格执行：三项都已接进 `build_system_prompt`。`output_style` 此前只存不用（控制台上可填、API 能读回，但对模型完全没有效果），现已接上，并由 `tests/unit/test_prompts.py` 的字段反查用例锁死
    - 参考 PRD §4.7
 
 - [ ]* 12.1 编写标签模板解析与激活流程测试
@@ -113,4 +114,15 @@
    - 引入 alembic（async 模板，baseline 迁移与 create_all 无漂移），Makefile migrate 目标，镜像启动先跑迁移
    - 测试：crypto/translator/callback/ws 单测、test_app 矩阵（两平台 × 两模式 × 凭据）、layering 平台 SDK 锁定、worker 双平台回帖
 
-- [ ] 15. 检查点 - 全量测试通过并汇报整体实施结果
+- [x] 15. 管理控制台前端（`web/`，Vite + React + TypeScript + Ant Design）
+   - Admin API 补齐控制台所需端点：`GET /api/channels`（此前无从列举频道，只能手输 id）、`GET/PATCH /api/channels/{id}`（频道级开关）、`GET /api/tools`（工具名的唯一来源，避免前端硬编码随 `build_tools()` 漂移）、标签的 PATCH/DELETE
+   - 可选令牌鉴权（`adapters/admin/auth.py`）：配了 `ADMIN_API_TOKEN` 则资源路由要求 Bearer，`/health` 有意不保护以便探针匿名可打；比较走 `secrets.compare_digest` 防计时侧信道
+   - CORS 中间件按 `admin_api.cors_origins` 启用，独立部署时必需（不配则浏览器拦掉全部 /api 请求）
+   - 十个页面：频道列表 / 概览 / 任务 / 记忆 / 预算 / 策略 / 标签 / 审计 / 设置 / 404
+   - 前后端对齐纪律：`web/src/api/index.ts` 按资源分组对应 `adapters/admin/` 的模块，`types.ts` 与 `serializers.py` 逐字段对应。后端返回 `dict[str, Any]`，OpenAPI 里没有响应形状，故这层只能靠人守
+   - 渲染冒烟（`npm run smoke`）：各页面在 Node 里 SSR 一遍。`vite build` 只保证编译过，抓不到缺失导出、渲染期抛错这类「编译得过但白屏」的问题，也顺带暴露 AntD 废弃 prop。**只覆盖首帧** —— SSR 不跑 `useEffect`，取数分支（表格/抽屉/空态）未被覆盖；要覆盖须换 jsdom 挂载 + 打桩 fetch，未做
+   - 未做的检查：配色对比度（WCAG 数值核验）、无障碍规则（axe-core）。这两项都得看真实渲染，且完整的 WCAG 判定还需辅助技术实测与专家复核
+   - 修 `PUT /budget`：原先每次 `gen_id("bq")` 生成新 id，而 `upsert` 走 `session.merge` 按主键匹配，故是 INSERT 而非 UPDATE；`budget_quotas` 无 channel 唯一约束、`get_for_channel` 又 `.first()` 无排序，导致管理员改完上限读回的仍是旧行，看起来「改了没生效」。改为复用既有 id 原地更新，用量与周期起点保留，新上限高于已用量时把 EXHAUSTED 放回 ACTIVE
+   - 新增测试 49 条：`test_admin_auth.py`（22）、`test_channel_service.py`（9）、`test_budget_configure.py`（9，打真 SQL）、`test_prompts.py`（9）
+
+- [ ] 16. 检查点 - 全量测试通过并汇报整体实施结果
