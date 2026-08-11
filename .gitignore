@@ -12,3 +12,4 @@ config/config.yaml
 dist/
 build/
 .eggs/
+.vscode
