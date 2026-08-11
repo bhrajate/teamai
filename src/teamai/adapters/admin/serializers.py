@@ -11,11 +11,26 @@ from typing import Any
 from teamai.domain.models import (
     AuditLog,
     BudgetQuota,
+    ChannelInstance,
     MemoryEntry,
     PermissionPolicy,
     TagTemplate,
     Task,
 )
+
+
+def channel_to_dict(instance: ChannelInstance) -> dict[str, Any]:
+    return {
+        "id": instance.id,
+        "platform": instance.platform,
+        "channel_id": instance.channel_id,
+        "workspace_id": instance.workspace_id,
+        "agent_identity": instance.agent_identity,
+        "ambient_enabled": instance.ambient_enabled,
+        "cross_channel_learning": instance.cross_channel_learning,
+        "policy_id": instance.policy_id,
+        "created_at": instance.created_at.isoformat(),
+    }
 
 
 def memory_to_dict(entry: MemoryEntry) -> dict[str, Any]:

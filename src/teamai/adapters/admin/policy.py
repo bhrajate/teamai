@@ -15,6 +15,14 @@ from teamai.domain.models import AmbientRule, PermissionPolicy
 def build_policy_router(container: Container) -> APIRouter:
     router = APIRouter()
 
+    @router.get("/tools")
+    async def list_tools() -> list[str]:
+        """已注册的全部工具名，供策略编辑器出选项。
+
+        没有它前端只能硬编码一份工具名清单，`build_tools()` 增删工具时会静默漂移。
+        """
+        return container.tools.names
+
     @router.get("/channels/{channel_instance_id}/policy")
     async def get_policy(channel_instance_id: str) -> dict[str, Any]:
         policy = await container.policy_repo.get_for_channel(channel_instance_id)

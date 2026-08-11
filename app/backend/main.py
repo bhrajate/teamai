@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from teamai.adapters.admin import build_admin_router
 from teamai.adapters.feishu import build_connector as build_feishu_connector
@@ -63,6 +64,19 @@ def create_app() -> FastAPI:
                 logger.warning(f"释放容器资源异常: {exc}")
 
     app = FastAPI(title="TeamAI Admin API", version="0.1.0", lifespan=lifespan)
+
+    # 控制台前端独立部署时是另一个源，不加这个浏览器会拦掉全部 /api 请求。
+    # 不用通配 "*"：allow_credentials 与 "*" 组合会被浏览器拒绝，且 Admin API
+    # 上挂着可写端点，来源就该显式列举。留空即不装中间件（同源或走 vite proxy）。
+    if origins := settings.admin_api_cors_origin_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+
     app.include_router(build_admin_router(container))
 
     for c in connectors:

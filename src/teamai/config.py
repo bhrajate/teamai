@@ -129,6 +129,17 @@ class Settings(BaseSettings):
     # admin_api.*
     admin_api_host: str = "0.0.0.0"
     admin_api_port: int = 8000
+    # 控制台前端独立部署（另一个源）时必须列出其来源，否则浏览器拦掉跨源请求。
+    # 逗号分隔；留空即不启用 CORS 中间件（同源部署或仅用 vite proxy 时无须配）。
+    admin_api_cors_origins: str = ""
+    # Admin API 访问令牌。⚠️ 属凭据，配在 .env 而非 config.yaml。
+    # 留空则 /api 全部匿名可用 —— 上面挂着完整审计日志、频道记忆，以及可写的
+    # 预算配额与工具白名单，公网可达时务必配上。
+    admin_api_token: str = ""
+
+    @property
+    def admin_api_cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.admin_api_cors_origins.split(",") if o.strip()]
 
     # context.*
     context_max_messages: int = 60

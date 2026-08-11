@@ -20,6 +20,9 @@ ADMIN_DIR = pathlib.Path(__file__).resolve().parents[2] / "src" / "teamai" / "ad
 # 拆分前后逐条比对确认过的完整路由表，新增路由时同步更新
 EXPECTED_ROUTES = {
     ("DELETE", "/api/memories/{entry_id}"),
+    ("GET", "/api/channels"),
+    ("GET", "/api/channels/{channel_instance_id}"),
+    ("PATCH", "/api/channels/{channel_instance_id}"),
     ("GET", "/api/channels/{channel_instance_id}/audit"),
     ("GET", "/api/channels/{channel_instance_id}/budget"),
     ("GET", "/api/channels/{channel_instance_id}/memories"),
@@ -27,8 +30,11 @@ EXPECTED_ROUTES = {
     ("GET", "/api/channels/{channel_instance_id}/tags"),
     ("GET", "/api/channels/{channel_instance_id}/tasks"),
     ("GET", "/api/health"),
+    ("GET", "/api/tools"),
     ("POST", "/api/channels/{channel_instance_id}/memories"),
     ("POST", "/api/channels/{channel_instance_id}/tags"),
+    ("PATCH", "/api/channels/{channel_instance_id}/tags/{tag_id}"),
+    ("DELETE", "/api/channels/{channel_instance_id}/tags/{tag_id}"),
     ("PUT", "/api/channels/{channel_instance_id}/budget"),
     ("PUT", "/api/channels/{channel_instance_id}/policy"),
 }
@@ -51,8 +57,12 @@ def _actual_routes() -> set[tuple[str, str]]:
 
 
 def _resource_modules() -> list[str]:
-    """admin/ 下除 __init__、serializers 外的资源模块名。"""
-    skip = {"__init__", "serializers"}
+    """admin/ 下的资源模块名。
+
+    serializers（字段形状）与 auth（令牌校验依赖）不导出 build_*_router，
+    故排除在外，否则会被误判成漏装的资源组。
+    """
+    skip = {"__init__", "serializers", "auth"}
     return sorted(p.stem for p in ADMIN_DIR.glob("*.py") if p.stem not in skip)
 
 

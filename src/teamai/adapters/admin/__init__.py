@@ -5,14 +5,18 @@
 
 ⚠️ 新增资源模块后必须在 build_admin_router 里 include_router，否则该组路由
 静默不注册。此约束由 tests/unit/test_admin_routes.py 校验。
+
+令牌校验挂在资源路由这一层（见 auth.py），`/health` 有意留在保护范围外。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from teamai.adapters.admin.audit import build_audit_router
+from teamai.adapters.admin.auth import require_admin_token
 from teamai.adapters.admin.budget import build_budget_router
+from teamai.adapters.admin.channel import build_channel_router
 from teamai.adapters.admin.memory import build_memory_router
 from teamai.adapters.admin.policy import build_policy_router
 from teamai.adapters.admin.tag import build_tag_router
@@ -30,6 +34,7 @@ def build_admin_router(container: Container) -> APIRouter:
         return {"status": "ok"}
 
     for build in (
+        build_channel_router,
         build_memory_router,
         build_budget_router,
         build_policy_router,
@@ -37,6 +42,6 @@ def build_admin_router(container: Container) -> APIRouter:
         build_task_router,
         build_tag_router,
     ):
-        router.include_router(build(container))
+        router.include_router(build(container), dependencies=[Depends(require_admin_token)])
 
     return router

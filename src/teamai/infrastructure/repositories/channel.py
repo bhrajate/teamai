@@ -46,6 +46,13 @@ class SQLChannelRepository(ChannelRepository):
         m = await self._session.get(ChannelInstanceModel, channel_instance_id)
         return _model_to_channel(m) if m else None
 
+    async def list(self) -> list[ChannelInstance]:
+        # id 是 gen_id 生成的 `ch_<ULID>`，字典序即生成时间序（见 domain/identity.py），
+        # 故按 id 倒序等价于按 created_at 倒序，且走主键索引不必额外排序列。
+        stmt = select(ChannelInstanceModel).order_by(ChannelInstanceModel.id.desc())
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_model_to_channel(m) for m in rows]
+
     async def get_by_platform_channel(
         self, platform: str, channel_id: str, workspace_id: str
     ) -> ChannelInstance | None:

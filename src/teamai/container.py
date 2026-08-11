@@ -134,7 +134,7 @@ def build_container() -> Container:
     budget = BudgetController(budget_repo, audit)
     memory = MemoryService(memory_repo, channel_repo, audit, vector_store=build_vector_store())
     tags = TagResolver(tag_repo, audit)
-    channels = ChannelService(channel_repo, policy_repo)
+    channels = ChannelService(channel_repo, policy_repo, audit)
 
     tools = build_tools()
     gateway = PydanticAIGateway(ModelConfig.from_settings(settings))
