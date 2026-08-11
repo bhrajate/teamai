@@ -157,6 +157,7 @@ class MessageRouter:
             policy,
             role=tag.role if tag else None,
             tag_instruction=tag.instruction if tag else None,
+            output_style=tag.output_style if tag else None,
         )
         bundle = ContextBundle(
             task_id=task.id,
