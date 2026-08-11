@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -76,8 +77,15 @@ class Settings(BaseSettings):
     feishu_encrypt_key: str = ""
     feishu_verification_token: str = ""
 
-    # LLM 凭据
-    anthropic_api_key: str = ""
+    # LLM 凭据。留空则不传给 provider，由各家 SDK 自行读它认的环境变量
+    # （AnthropicProvider 读 ANTHROPIC_API_KEY，OpenAIProvider 读 OPENAI_API_KEY）。
+    # 兼容旧名 ANTHROPIC_API_KEY：协议可配之后 key 不再专属 Anthropic，
+    # 故字段改叫 llm_api_key，但旧 .env 无须改动（新名优先）。
+    llm_api_key: str = Field("", validation_alias=AliasChoices("llm_api_key", "anthropic_api_key"))
+    # 自定义端点。留空走各 provider 的官方地址；填了则注入到 provider
+    # （仅对接受 base_url 的 provider 生效，如 anthropic / openai / ollama；
+    # deepseek 这类自带固定端点的会忽略它）。
+    llm_base_url: str = ""
 
     # 连接串
     database_url: str = "postgresql+asyncpg://teamai:teamai@localhost:5432/teamai"
@@ -87,6 +95,11 @@ class Settings(BaseSettings):
     # ===== 以下走 config/config.yaml：非敏感可调项 =====
 
     # model.*
+    # 取 `provider:model` 形式，provider 段同时决定**协议**与端点，例如
+    # anthropic:（/v1/messages）、openai-chat:（/v1/chat/completions）、
+    # openai:（/v1/responses）、deepseek: / ollama: 等。
+    # 不带前缀的裸名按 anthropic 处理（见 llm/gateway.py 的 _normalize），
+    # 故下面三个默认值与旧配置都无须改动。
     model_light_primary: str = "claude-sonnet-4-5"
     model_light_fallback: str = "claude-3-5-haiku"
     model_full: str = "claude-opus-4-8"

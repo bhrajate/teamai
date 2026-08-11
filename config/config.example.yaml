@@ -3,7 +3,7 @@
 # 用法：拷一份为 config.yaml（已在 .gitignore 中），按需改动。
 #   cp config.example.yaml config.yaml
 #
-# 这里只放**非敏感可调项**。凭据与连接串（Slack token、ANTHROPIC_API_KEY、
+# 这里只放**非敏感可调项**。凭据与连接串（Slack token、LLM_API_KEY / LLM_BASE_URL、
 # DATABASE_URL / REDIS_URL / QDRANT_URL）走 .env，见 .env.example ——
 # 它们每套环境都不同，也不该出现在任何可能被提交的文件里。
 #
@@ -16,10 +16,75 @@
 
 # LLM 模型分级。轻量任务用 light（primary 不可用时降级到 fallback），
 # 推理链长或改动有风险的任务用 full，映射见 application/intent.py。
+#
+# 取 `provider:model` 形式 —— **provider 段同时决定协议与端点**，换供应商只改
+# 这三行，不动代码。不带前缀的裸名按 anthropic 处理（兼容旧配置）。
+#
+# 前缀 → 协议：
+#   anthropic:      /v1/messages            Anthropic 原生
+#   openai-chat:    /v1/chat/completions    第三方中转/自建网关多为此种
+#   openai:         /v1/responses           OpenAI 官方给新项目推荐的协议
+#   deepseek: moonshotai: zai: ...          自带固定端点，忽略 LLM_BASE_URL
+#   ollama: litellm: openrouter: ...        需配 LLM_BASE_URL 指向实例
+# 全表见 pydantic-ai 的 providers 目录（另有 azure/google/bedrock/xai/groq 等）。
+#
+# ⚠️ 换供应商时 .env 的 LLM_API_KEY / LLM_BASE_URL 要一起改，两边不配套会 401
+# 或打错端点。下面每个例子都标了它需要的 .env，成套复制。
+
+# —— 默认：Anthropic 官方 ——
+# .env: LLM_API_KEY=sk-ant-xxx   （LLM_BASE_URL 留空）
 model:
   light_primary: claude-sonnet-4-5
   light_fallback: claude-3-5-haiku
   full: claude-opus-4-8
+
+# —— 例 1：Anthropic 协议的中转站 ——
+# 模型名照写，只在 .env 里指端点。
+# .env: LLM_API_KEY=sk-xxx
+#       LLM_BASE_URL=https://your-relay.example.com
+#model:
+#  light_primary: anthropic:claude-sonnet-4-5
+#  light_fallback: anthropic:claude-3-5-haiku
+#  full: anthropic:claude-opus-4-8
+
+# —— 例 2：OpenAI 兼容网关（chat/completions，最常见的中转形态）——
+# .env: LLM_API_KEY=sk-xxx
+#       LLM_BASE_URL=https://your-gateway.example.com/v1
+#model:
+#  light_primary: openai-chat:gpt-5-mini
+#  light_fallback: openai-chat:gpt-5-nano
+#  full: openai-chat:gpt-5
+
+# —— 例 3：OpenAI 官方（responses 协议）——
+# .env: LLM_API_KEY=sk-xxx      （LLM_BASE_URL 留空）
+#model:
+#  light_primary: openai:gpt-5-mini
+#  light_fallback: openai:gpt-5-nano
+#  full: openai:gpt-5
+
+# —— 例 4：DeepSeek 官方（自带端点，LLM_BASE_URL 必须留空否则被忽略）——
+# .env: LLM_API_KEY=sk-xxx
+#model:
+#  light_primary: deepseek:deepseek-chat
+#  light_fallback: deepseek:deepseek-chat
+#  full: deepseek:deepseek-reasoner
+
+# —— 例 5：本地 Ollama（无需 key，但字段不能空着）——
+# .env: LLM_API_KEY=ollama
+#       LLM_BASE_URL=http://localhost:11434/v1
+#model:
+#  light_primary: ollama:qwen3
+#  light_fallback: ollama:qwen3
+#  full: ollama:qwen3
+
+# —— 例 6：混用不同供应商省钱（light 走便宜的，full 留旗舰）——
+# 注意 LLM_BASE_URL 是全局一份，混用时只有接受 base_url 的 provider 会用它；
+# 所以这种配法最好让各家都走官方端点（LLM_BASE_URL 留空），或全部用同一个网关。
+# .env: LLM_API_KEY=sk-xxx      （LLM_BASE_URL 留空）
+#model:
+#  light_primary: deepseek:deepseek-chat
+#  light_fallback: deepseek:deepseek-chat
+#  full: anthropic:claude-opus-4-8
 
 # 长任务队列（Redis list）。name 是 Redis 里的键名。
 queue:
