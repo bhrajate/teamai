@@ -1,0 +1,52 @@
+# 控制台前端（web/dist）的静态托管示例。
+#
+# 前端是独立静态站，与 Admin API 不同源，故必须在后端配 ADMIN_API_CORS_ORIGINS
+# 放行本站来源（见 config/config.example.yaml 的 admin_api.cors_origins），
+# 否则浏览器会拦掉全部 /api 请求。
+#
+# 用法：改 server_name 与 root，放进 nginx 的 conf.d/ 后 reload。
+
+server {
+    listen 80;
+    server_name teamai-console.example.com;
+
+    root /srv/teamai-console;   # web/dist 的内容放这里
+    index index.html;
+
+    # ⚠️ 这一条不能省。前端用 BrowserRouter，/channels/ch_xxx/audit 这类地址
+    # 在磁盘上并不存在对应文件；不回退到 index.html 的话，用户在子路由上
+    # 按刷新就是 404 —— 首次进入没问题（都从 / 跳转），只有刷新和直接贴链接会炸，
+    # 因此很容易漏到上线后才发现。
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 带 hash 的构建产物可长缓存：文件名随内容变，改了就是新名字。
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # index.html 必须不缓存：它引用的是带 hash 的资源名，缓存了它
+    # 就等于把用户钉在旧版本上，发新版也刷不出来。
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # sourcemap 别对外：里面是完整源码。要留给内网排查就换成 IP 白名单。
+    location ~ \.map$ {
+        deny all;
+    }
+}
+
+# 想让前后端同源、免掉 CORS，就把 API 反代到同一个 server 下，
+# 用这一段替换上面的 location /assets/ 之外的部分：
+#
+#     location /api/ {
+#         proxy_pass http://127.0.0.1:8000;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#     }
+#
+# 这样前端的 VITE_API_BASE_URL 留空即可（走相对路径 /api），
+# 后端的 ADMIN_API_CORS_ORIGINS 也不必配。

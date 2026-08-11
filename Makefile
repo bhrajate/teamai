@@ -8,6 +8,9 @@
 
 VENV       := .venv
 PY         := $(VENV)/bin/python
+# 控制台前端。独立的 node 工程，与 python 侧互不干扰
+WEB        := web
+NPM        := npm --prefix $(WEB)
 PYTEST     := $(VENV)/bin/pytest
 RUFF       := $(VENV)/bin/ruff
 UV_INDEX   := https://mirrors.aliyun.com/pypi/simple/
@@ -22,6 +25,7 @@ IMAGE      ?= teamai:latest
 # 目标名与同名目录/文件冲突时（如 config、tests），make 会以为已是最新而跳过
 .PHONY: help install lock sync lint fmt test test-cov check run-web run-worker migrate \
 	verify-longtask verify-longtask-db \
+	web-install web-dev web-build web-check \
         up down restart logs ps build image-run clean config
 
 .DEFAULT_GOAL := help
@@ -79,6 +83,21 @@ verify-longtask:  ## 冒烟验证长任务链路（需 make up 起 redis）
 
 verify-longtask-db:  ## 同上但用真 Container 入队，随后手动跑 make run-worker 看消费
 	$(PY) -m scripts.verify_long_task_flow --real-db
+
+# ---------- 控制台前端 ----------
+# 需要 node ≥ 20。前端是独立静态站，构建产物在 web/dist/。
+
+web-install:  ## 装前端依赖
+	$(NPM) install
+
+web-dev:  ## 起前端 dev server（:5173，/api 代到本机 8000，无须配 CORS）
+	$(NPM) run dev
+
+web-build:  ## 构建前端到 web/dist（先跑 tsc 类型检查）
+	$(NPM) run build
+
+web-check:  ## 前端类型检查 + 各页面渲染冒烟（构建抓不到运行时错误）
+	$(NPM) run check
 
 migrate:  ## 应用数据库迁移（alembic upgrade head，生产建库路径）
 	$(UV) run alembic upgrade head

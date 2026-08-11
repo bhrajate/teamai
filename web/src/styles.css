@@ -1,0 +1,66 @@
+/* 全局兜底样式。AntD v6 默认走 CSS 变量并自带 reset，这里只补它不管的部分。 */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  /* 字体与背景由 ConfigProvider 的 token 决定，这里只防 iOS 上的字号自动放大 */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 滚动条收窄一档。控制台里同时出现侧栏、表格、抽屉三层滚动，
+   系统默认宽度会把内容挤掉一截。用 currentColor + 透明度，
+   从而深浅主题都不必各写一份。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, currentColor 34%, transparent);
+}
+
+/* 等宽显示 ID 与 token 数。ULID 与数字在比例字体下宽度不一，
+   竖排对不齐，扫一列 ID 时很难受。 */
+.mono {
+  font-family: var(--ant-font-family-code);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+/* 长文本（记忆内容、审计 detail）在表格里换行而不撑破布局 */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* 尊重「减少动效」的系统设置：控制台有大量表格重绘，
+   开了这个偏好的人对动画尤其敏感。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
