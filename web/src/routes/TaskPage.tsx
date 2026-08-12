@@ -1,7 +1,8 @@
-import { ReloadOutlined } from '@ant-design/icons'
-import { Button, Card, Space, Table, Tooltip, Typography } from 'antd'
+import { ArrowRightOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Button, Card, Flex, Space, Table, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback } from 'react'
+import { Link } from 'react-router-dom'
 
 import { taskApi } from '@/api'
 import type { Task } from '@/api/types'
@@ -113,9 +114,15 @@ export function TaskPage() {
                 expandable={{
                   // 创建时间不值得占一列，但排查时要看，收进展开行
                   expandedRowRender: (r) => (
-                    <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      创建于 {formatTime(r.created_at)}，最后更新 {formatTime(r.updated_at)}
-                    </Typography.Text>
+                    <Flex justify="space-between" align="center" gap={16} wrap>
+                      <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                        创建于 {formatTime(r.created_at)}，最后更新 {formatTime(r.updated_at)}
+                      </Typography.Text>
+                      {/* 任务本身只有状态，答不了「为什么是这个结果」。那要看当时的提示词与响应。 */}
+                      <Link to={`/channels/${channelId}/interactions?task=${r.id}`}>
+                        看交互记录 <ArrowRightOutlined />
+                      </Link>
+                    </Flex>
                   ),
                 }}
               />

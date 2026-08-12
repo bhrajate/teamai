@@ -41,11 +41,23 @@ class _InMemoryVectorStore:
 
 
 class QdrantVectorStore:
-    """Qdrant 实现。Qdrant 不可用时回退到内存实现。"""
+    """Qdrant 实现。Qdrant 不可用时回退到内存实现。
 
-    def __init__(self, url: str | None = None, collection: str | None = None) -> None:
+    `dimensions` 必须与实际 embedder 的输出维度一致。此前这里硬编码 384，
+    而常用 embedding 模型是 1536（text-embedding-3-small）或 1024 —— 一旦真接上
+    embedder，建集合就会与向量维度不匹配而在写入时报错。这个 bug 长期被
+    「embedder 从未注入、向量路径从未运行」掩盖着，故装配时由 Embedder 声明维度。
+    """
+
+    def __init__(
+        self,
+        url: str | None = None,
+        collection: str | None = None,
+        dimensions: int = 1536,
+    ) -> None:
         self._url = url or settings.qdrant_url
         self._collection = collection or settings.qdrant_collection
+        self._dimensions = dimensions
         self._client = None
         self._fallback = _InMemoryVectorStore()
 
@@ -90,12 +102,18 @@ class QdrantVectorStore:
             if self._collection not in collections:
                 client.create_collection(
                     collection_name=self._collection,
-                    vectors_config={"size": 384, "distance": "Cosine"},
+                    vectors_config={"size": self._dimensions, "distance": "Cosine"},
                 )
             self._client = client
         except Exception:  # pragma: no cover - 外部服务不可用
             self._client = None
 
 
-def build_vector_store() -> VectorStore:
-    return QdrantVectorStore()
+def build_vector_store(dimensions: int = 1536) -> VectorStore:
+    """按 embedder 声明的维度装配。
+
+    ⚠️ 换 embedding 模型且维度变化时，已有集合不会自动重建 —— Qdrant 的集合
+    维度创建后不可改。需要手动删除集合再重启（记忆条目仍在 Postgres 里，
+    但向量索引要重建），或换一个 `qdrant_collection` 名。
+    """
+    return QdrantVectorStore(dimensions=dimensions)

@@ -39,6 +39,14 @@ export type AuditAction =
   | 'ambient_trigger'
 export type AuditResult = 'SUCCESS' | 'FAILURE' | 'DENIED' | 'PAUSED'
 
+/**
+ * domain/models/interaction.py InteractionResult
+ *
+ * 与 AuditResult 取值相近但不是同一个枚举：这里没有 DENIED（工具被拒记在审计），
+ * 且用 DONE 而非 SUCCESS。别把两者的 Tag 组件混用。
+ */
+export type InteractionResult = 'DONE' | 'PAUSED' | 'FAILED'
+
 /** 平台标识。adapters/ 下每个子包一个，`CONNECTOR_BUILDERS` 决定实际启用哪些。 */
 export type Platform = 'slack' | 'feishu'
 
@@ -98,6 +106,35 @@ export type AuditLog = {
   tokens_consumed: number
   result: AuditResult
   detail: Record<string, unknown>
+}
+
+/**
+ * 一次 Agent 调用的完整留痕。
+ *
+ * 三段文本（system_prompt / user_prompt / response)后端有意不截断 —— 这个
+ * 资源的用途就是复现「模型当时看到了什么」。故列表页只出摘要，全文进抽屉。
+ */
+export type Interaction = {
+  id: string
+  task_id: string
+  channel_instance_id: string
+  thread_ref: string
+  requester_id: string | null
+  user_prompt: string
+  system_prompt: string
+  response: string
+  model_level: string
+  /** 实际生效的模型 ID。light 档降级到备用模型时与配置里的主模型不同。 */
+  model_id: string
+  tokens_in: number
+  tokens_out: number
+  /** 后端由 tokens_in + tokens_out 算出（模型上的 property），非独立存储字段。 */
+  tokens_total: number
+  result: InteractionResult
+  error: string | null
+  /** 引用而非内容快照：记忆条目 id、线程历史条数等，形状随调用路径而异。 */
+  context_refs: Record<string, unknown>
+  created_at: string
 }
 
 export type Task = {

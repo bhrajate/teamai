@@ -34,6 +34,11 @@ export function useAsync<T>(
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
 
+  // 上一次取数用的 deps。用来区分本次重取是「换了查询」还是「同一查询刷新」,
+  // 两者对旧数据的处置相反。不用 nonce 反推：刷新与换频道若落在同一批更新里,
+  // nonce 与 deps 会同时变,那时该按「换了查询」处理。
+  const lastDeps = useRef(deps)
+
   // deps 摊进下面那个 useEffect 的依赖数组，故长度必须每次渲染都一样 ——
   // 变长会让 React 把不同位置的依赖两两错配比较，重取时机变得不可预期，
   // 且 React 只在 dev 下警告。这里显式拦一道，把问题指到调用点。
@@ -54,6 +59,23 @@ export function useAsync<T>(
     let alive = true
     setLoading(true)
     setError(undefined)
+
+    /**
+     * 换了查询就丢掉旧数据，让调用方回到骨架态。
+     *
+     * 不丢的话，取数期间页面会拿上一次查询的结果继续渲染：换频道时表格里还是
+     * 前一个频道的行；交互记录页点进单任务视图时，横幅已写「只看任务 X」而表格
+     * 仍是全频道的行 —— 界面在这一瞬间自相矛盾。
+     *
+     * 反之 reload()（同一查询刷新）要留着旧数据：否则每次改完数据刷新，表格都会
+     * 先闪成骨架再回来。
+     *
+     * 逐项比而非整体比引用：deps 由调用方每次渲染新建数组，引用必然不同。
+     * 长度恒定由上面那道 DEV 断言保证，故按下标比是安全的。
+     */
+    const queryChanged = deps.some((d, i) => d !== lastDeps.current[i])
+    lastDeps.current = deps
+    if (queryChanged) setData(undefined)
 
     fn(ctrl.signal)
       .then((value) => {

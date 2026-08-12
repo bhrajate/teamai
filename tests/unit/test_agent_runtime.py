@@ -22,7 +22,13 @@ from teamai.domain.models import (
     PermissionPolicy,
     Task,
 )
-from teamai.domain.ports import LLMGateway, LLMResult, TokenBudgetExceeded, ToolBundle
+from teamai.domain.ports import (
+    LLMGateway,
+    LLMResult,
+    ThreadMessage,
+    TokenBudgetExceeded,
+    ToolBundle,
+)
 from teamai.domain.services import AuditLogWriter
 from tests.fakes import FakeAuditRepository, FakeBudgetRepository
 
@@ -154,11 +160,43 @@ async def test_记忆与线程历史拼进提示词(audit_repo: FakeAuditReposit
     gateway = SpyGateway()
     runtime, _ = _runtime(gateway, SpyToolProvider(), audit_repo)
 
-    await runtime.run(_task(), _bundle(["github"], history=["昨天聊过部署"]))
+    history = [ThreadMessage(author_id="U9", text="昨天聊过部署")]
+    await runtime.run(_task(), _bundle(["github"], history=history))
 
     prompt = gateway.calls[0]["prompt"]
     assert "帮我看下昨天的告警" in prompt
     assert "昨天聊过部署" in prompt
+
+
+async def test_线程历史标出机器人自己的发言(audit_repo: FakeAuditRepository) -> None:
+    """混作一堆无署名文本时，模型容易把自己上一轮的输出当成用户诉求。"""
+    gateway = SpyGateway()
+    runtime, _ = _runtime(gateway, SpyToolProvider(), audit_repo)
+
+    history = [
+        ThreadMessage(author_id="U9", text="部署失败了"),
+        ThreadMessage(author_id="B1", text="我看下日志", is_bot=True),
+    ]
+    await runtime.run(_task(), _bundle(["github"], history=history))
+
+    prompt = gateway.calls[0]["prompt"]
+    assert "U9: 部署失败了" in prompt
+    assert "AI: 我看下日志" in prompt
+
+
+async def test_压缩掉的历史条数在提示词里说明(audit_repo: FakeAuditRepository) -> None:
+    """不说明的话，模型会把「历史只有这么多」当成事实。"""
+    gateway = SpyGateway()
+    runtime, _ = _runtime(gateway, SpyToolProvider(), audit_repo)
+    # settings.context_max_messages 默认 60，造 62 条触发压缩
+    history = [ThreadMessage(author_id="U1", text=f"第 {i} 句") for i in range(62)]
+
+    await runtime.run(_task(), _bundle(["github"], history=history))
+
+    prompt = gateway.calls[0]["prompt"]
+    assert "更早的 2 条已省略" in prompt
+    assert "第 0 句" not in prompt, "最旧的应被丢弃"
+    assert "第 61 句" in prompt
 
 
 async def test_成功后扣预算并写审计(audit_repo: FakeAuditRepository) -> None:

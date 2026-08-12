@@ -65,8 +65,23 @@ class SQLMemoryRepository(MemoryRepository):
         self._session.add(_memory_to_model(entry))
         await self._session.commit()
 
-    async def list_by_channel(self, channel_instance_id: str) -> list[MemoryEntry]:
-        stmt = select(MemoryEntryModel).where(MemoryEntryModel.channel_instance_id == channel_instance_id)
+    async def list_by_channel(
+        self, channel_instance_id: str, limit: int | None = None
+    ) -> list[MemoryEntry]:
+        """按 created_at 倒序返回，limit 为 None 时全量。
+
+        ⚠️ ORDER BY 不可省。此前这里既无排序也无上限，而调用方
+        （MemoryService.query_for_context）在 Python 侧切前 5 条当检索结果 ——
+        行序由数据库自行决定，等于随机取样；且随频道使用时长线性变慢，
+        因为每次都要把该频道全部记忆读进进程内存。
+        """
+        stmt = (
+            select(MemoryEntryModel)
+            .where(MemoryEntryModel.channel_instance_id == channel_instance_id)
+            .order_by(MemoryEntryModel.created_at.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_model_to_memory(r) for r in rows]
 

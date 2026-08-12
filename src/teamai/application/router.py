@@ -4,6 +4,9 @@
 Intent.is_long_running）入队后立即回「已受理」，由 worker 进程消费并
 经 MessagePublisher 回帖。分叉理由是平台的事件响应窗口只有 3 秒，
 而多轮工具调用的任务耗时不可控。
+
+非 @ 消息不再逐条写进记忆库（那会让 memory_entries 退化成聊天日志），
+而是 append 进滚动窗口，由 worker 定时蒸馏成结论 —— 见 application/distiller.py。
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from teamai.application.agent.prompts import build_system_prompt
 from teamai.application.agent.runtime import AgentRuntime, StageResult, StageStatus
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
+from teamai.application.conversation import ConversationService
+from teamai.application.distiller import MemoryDistiller
 from teamai.application.events import IncomingMessage
 from teamai.application.intent import IntentClassifier
 from teamai.application.memory import MemoryService
@@ -25,6 +30,11 @@ from teamai.domain.models import ChannelInstance, Task, TaskStatus
 from teamai.domain.repositories import PolicyRepository
 
 logger = logging.getLogger(__name__)
+
+# 视为私密会话的 channel_type。PRD §4.2 要求「私密频道与私信内容默认不进入记忆」。
+# slack: im（单聊）/ mpim（多人私聊）；feishu: p2p（单聊）。
+# 此前 Visibility 枚举建好了却无人判定，单聊内容照样进频道记忆 —— 承诺没落地。
+PRIVATE_CHANNEL_TYPES = frozenset({"im", "mpim", "p2p"})
 
 
 @dataclass
@@ -44,6 +54,8 @@ class MessageRouter:
         runtime: AgentRuntime,
         channels: ChannelService,
         policy_repo: PolicyRepository,
+        conversation: ConversationService | None = None,
+        distiller: MemoryDistiller | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._intent = intent
@@ -53,26 +65,42 @@ class MessageRouter:
         self._runtime = runtime
         self._channels = channels
         self._policy_repo = policy_repo
+        self._conversation = conversation
+        self._distiller = distiller
 
     async def route(self, msg: IncomingMessage) -> RoutingDecision:
         instance = await self._channels.get_or_create(msg.platform, msg.channel_id, msg.workspace_id)
 
         if not msg.is_mention:
-            # 普通消息：作为频道上下文素材（Ambient 模式下会用于记忆学习）
-            if msg.text.strip() and not msg.text.startswith("/"):
-                await self._memory.store(instance.id, msg.text[:500], source_user_id=msg.user_id)
-            return RoutingDecision(handler="observe", message="已记录频道上下文")
+            return await self._observe(instance, msg)
 
-        return await self._handle_task(instance, msg.thread_ref, msg.user_id, msg.text)
+        return await self._handle_task(instance, msg)
+
+    async def _observe(self, instance: ChannelInstance, msg: IncomingMessage) -> RoutingDecision:
+        """普通消息：作为记忆素材进滚动窗口，稍后由 worker 蒸馏。
+
+        私密会话直接丢弃（PRD §4.2）。斜杠开头的也跳过：那是给别的机器人或
+        平台自身的指令，不是团队对话内容。
+        """
+        if msg.channel_type in PRIVATE_CHANNEL_TYPES:
+            return RoutingDecision(handler="observe", message="私密会话不进入记忆")
+        text = msg.text.strip()
+        if not text or text.startswith("/"):
+            return RoutingDecision(handler="observe", message="已忽略")
+        if self._distiller is None:
+            return RoutingDecision(handler="observe", message="未启用记忆蒸馏")
+        await self._distiller.observe(instance.id, msg.user_id, text)
+        return RoutingDecision(handler="observe", message="已记录频道上下文")
 
     async def _handle_task(
         self,
         instance: ChannelInstance,
-        thread_ref: str,
-        user_id: str,
-        text: str,
+        msg: IncomingMessage,
     ) -> RoutingDecision:
         channel_instance_id = instance.id
+        thread_ref = msg.thread_ref
+        user_id = msg.user_id
+        text = msg.text
         tag_name = None
         parts = text.split()
         if parts and parts[0].startswith("/"):
@@ -152,6 +180,12 @@ class MessageRouter:
         memory_hits = await self._memory.query_for_context(task.channel_instance_id, prompt)
         allowed_tools = list(policy.allowed_tools) if policy else []
 
+        # 线程历史按需向平台拉取，不自建镜像表 —— 平台是聊天记录的唯一权威源，
+        # 理由见 docs/Design-conversation-context.md §2。拉不到就空着，任务照跑。
+        thread_history = []
+        if self._conversation is not None:
+            thread_history = await self._conversation.thread_history(instance, task.thread_ref)
+
         system_prompt = build_system_prompt(
             instance,
             policy,
@@ -169,5 +203,7 @@ class MessageRouter:
             policy=policy,
             allowed_tools=allowed_tools,
             memory_hits=memory_hits,
+            thread_history=thread_history,
+            tag=tag,
         )
         return await self._runtime.run(task, bundle)

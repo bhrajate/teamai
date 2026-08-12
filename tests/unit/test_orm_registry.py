@@ -15,6 +15,7 @@ ORM_DIR = pathlib.Path(__file__).resolve().parents[2] / "src" / "teamai" / "infr
 
 # 期望建出的全部表，新增表时同步更新
 EXPECTED_TABLES = {
+    "agent_interactions",
     "audit_logs",
     "budget_quotas",
     "channel_instances",

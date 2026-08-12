@@ -162,6 +162,45 @@ async def sweep_stale_tasks(container: Container) -> None:
         logger.error(f"超时巡检失败: {exc}")
 
 
+async def distill_memories(container: Container) -> None:
+    """记忆蒸馏：把到期的对话窗口提炼成记忆。独立 session 与异常兜底的理由同上。
+
+    没有这一步，router 攒进滚动缓冲的非 @ 消息永远不会落地成记忆 ——
+    窗口只增不减，「频道记忆」这个能力等于没有。
+
+    失败单独记 error 而非只看产出条数：全部频道蒸馏失败与「没有到期窗口」
+    在日志里长得一样，前者是故障。
+    """
+    try:
+        async with open_job_scope(container) as scope:
+            report = await scope.distiller.sweep()
+        if report.total_entries:
+            logger.info(
+                f"记忆蒸馏: {len(report.distilled)} 个频道产出 {report.total_entries} 条记忆"
+            )
+        if report.skipped_budget:
+            logger.info(f"记忆蒸馏: {len(report.skipped_budget)} 个频道配额不足已跳过")
+        if report.failed:
+            logger.error(f"记忆蒸馏有 {len(report.failed)} 个频道失败: {report.failed}")
+    except Exception as exc:
+        logger.error(f"记忆蒸馏失败: {exc}")
+
+
+async def purge_expired_interactions(container: Container) -> None:
+    """交互记录保留期清理。
+
+    这张表存提示词与响应全文，不清理会无限增长 —— 既是存储负担，更是合规
+    负担：保留期是对外承诺的一部分，不执行等于没承诺。
+    """
+    try:
+        async with open_job_scope(container) as scope:
+            deleted = await scope.interactions.purge_expired()
+        if deleted:
+            logger.info(f"交互记录清理: 删除 {deleted} 条超出保留期的记录")
+    except Exception as exc:
+        logger.error(f"交互记录清理失败: {exc}")
+
+
 def register_jobs(container: Container) -> None:
     """注册定时任务。
 
@@ -188,7 +227,21 @@ def register_jobs(container: Container) -> None:
         minutes=interval,
         coro=functools.partial(sweep_stale_tasks, container),
     )
-    logger.info(f"已注册定时任务: 预算周期重置 / 超时巡检，每 {interval} 分钟")
+    scheduler.add_interval(
+        "memory-distill",
+        minutes=interval,
+        coro=functools.partial(distill_memories, container),
+    )
+    purge_interval = settings.jobs_purge_interval_minutes
+    scheduler.add_interval(
+        "interaction-purge",
+        minutes=purge_interval,
+        coro=functools.partial(purge_expired_interactions, container),
+    )
+    logger.info(
+        f"已注册定时任务: 预算周期重置 / 超时巡检 / 记忆蒸馏，每 {interval} 分钟；"
+        f"交互记录清理，每 {purge_interval} 分钟"
+    )
 
 
 async def _main() -> None:

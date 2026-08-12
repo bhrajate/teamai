@@ -16,8 +16,22 @@ from teamai.domain.ports.tools import ToolBundle
 
 @dataclass
 class LLMResult:
+    """一次调用的结果。
+
+    输入/输出 token 分开报，不只给 total：两者单价差数倍，只有 total 时
+    按频道核算成本只能猜一个平均单价。`tokens` 保留为两者之和，预算控制器
+    与审计沿用它 —— 配额限的是总量，不必区分。
+
+    `model_id` 是**实际生效**的模型而非配置里的档位：light 档走
+    FallbackModel(primary → fallback)，主模型失败时真正跑的是备用模型。
+    只记档位会让成本归因按错误的单价计算。
+    """
+
     output: str
     tokens: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    model_id: str = ""
 
 
 class TokenBudgetExceeded(Exception):

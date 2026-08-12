@@ -9,6 +9,7 @@ from __future__ import annotations
 from teamai.domain.repositories.audit import AuditRepository
 from teamai.domain.repositories.budget import BudgetRepository
 from teamai.domain.repositories.channel import ChannelRepository
+from teamai.domain.repositories.interaction import InteractionRepository
 from teamai.domain.repositories.memory import MemoryRepository
 from teamai.domain.repositories.policy import PolicyRepository
 from teamai.domain.repositories.tag import TagRepository
@@ -18,6 +19,7 @@ __all__ = [
     "AuditRepository",
     "BudgetRepository",
     "ChannelRepository",
+    "InteractionRepository",
     "MemoryRepository",
     "PolicyRepository",
     "TagRepository",

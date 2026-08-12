@@ -17,6 +17,7 @@ from teamai.adapters.admin.audit import build_audit_router
 from teamai.adapters.admin.auth import require_admin_token
 from teamai.adapters.admin.budget import build_budget_router
 from teamai.adapters.admin.channel import build_channel_router
+from teamai.adapters.admin.interaction import build_interaction_router
 from teamai.adapters.admin.memory import build_memory_router
 from teamai.adapters.admin.policy import build_policy_router
 from teamai.adapters.admin.tag import build_tag_router
@@ -41,6 +42,7 @@ def build_admin_router(container: Container) -> APIRouter:
         build_audit_router,
         build_task_router,
         build_tag_router,
+        build_interaction_router,
     ):
         router.include_router(build(container), dependencies=[Depends(require_admin_token)])
 

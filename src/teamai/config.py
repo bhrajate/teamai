@@ -113,6 +113,44 @@ class Settings(BaseSettings):
     # qdrant.*（url 是连接串，走 .env）
     qdrant_collection: str = "teamai-memory"
 
+    # embedding.*
+    # 留空即关闭语义检索：记忆检索回落到「按时间倒序取最近若干条」，功能退化
+    # 但不报错。改造前的实现是「字段留着但组合根从不注入」，于是向量链路从未
+    # 运行过而无人察觉 —— 现在这个开关是显式的。
+    embedding_model: str = ""
+    # 维度必须与所选模型一致：向量库建集合时要用它，且 Qdrant 的集合维度
+    # 创建后不可修改。text-embedding-3-small / bge-large-zh 是 1536，
+    # bge-small-zh 是 512，multilingual-e5-small 是 384。
+    embedding_dimensions: int = 1536
+    # 端点与凭据留空则复用对话用的 llm_base_url / llm_api_key ——
+    # 多数部署里两者走同一个网关、同一把 key。
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+
+    # conversation.*（线程历史按需向平台拉取，不自建镜像表）
+    # 单次拉取的条数上限。再多也会被 context_max_messages 压缩掉。
+    conversation_history_limit: int = 30
+    # 线程历史的缓存时长。取秒级：历史要求「秒级新鲜」，缓存久了会把刚发的
+    # 消息漏在上下文外；但完全不缓存会让同一线程里连续几条消息各打一次
+    # 平台 API，很快撞上速率限制。
+    conversation_cache_ttl_seconds: int = 45
+
+    # memory.*（记忆蒸馏：对话窗口 → 结论，原文不入库）
+    # 窗口攒够这么多条就蒸馏一次
+    memory_window_size: int = 20
+    # 窗口静置超过这么久也蒸馏，避免冷清频道的对话一直攒着不落地
+    memory_window_idle_seconds: int = 600
+
+    # interactions.*（Agent 交互记录：提示词与响应全文）
+    # 保留期。<= 0 表示不清理（留给「合规要求永久留存」的部署）。
+    # 这张表含提示词与响应全文，不清理会无限增长 —— 既是存储负担，
+    # 更是合规负担：保留期是对外承诺的一部分。
+    interactions_retention_days: int = 90
+    # 保留期清理的巡检间隔。默认一天一次 —— 它按 created_at 删过期行，
+    # 跑得比这密只是白扫表（保留期是天级的，多删几次结果一样）。
+    # 与 jobs_sweep_interval_minutes 分开正是因为这个量级差异。
+    jobs_purge_interval_minutes: int = 1440
+
     # budget.*
     budget_period: Literal["MONTHLY", "DAILY", "WEEKLY"] = "MONTHLY"
 

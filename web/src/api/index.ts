@@ -11,6 +11,7 @@ import type {
   Budget,
   BudgetPeriod,
   Channel,
+  Interaction,
   Memory,
   Policy,
   Tag,
@@ -79,6 +80,23 @@ export const policyApi = {
 export const auditApi = {
   list: (channelId: string, limit = 200, signal?: AbortSignal) =>
     request<AuditLog[]>(`/channels/${channelId}/audit`, { query: { limit }, signal }),
+}
+
+/**
+ * admin/interaction.py。只读 —— 记录由 AgentRuntime 执行时产生，
+ * 清理走 worker 的保留期巡检，故这里没有 create/remove。
+ */
+export const interactionApi = {
+  /** 频道最近若干条，时间倒序。后端 limit 上限 200（MAX_LIMIT），超了报 422。 */
+  list: (channelId: string, limit = 50, signal?: AbortSignal) =>
+    request<Interaction[]>(`/channels/${channelId}/interactions`, { query: { limit }, signal }),
+
+  /** 某任务的完整往返，时间正序。重试与多阶段任务会有多条，故不返回单条。 */
+  listByTask: (taskId: string, signal?: AbortSignal) =>
+    request<Interaction[]>(`/tasks/${taskId}/interactions`, { signal }),
+
+  // 后端还有 GET /interactions/{id}，这里没接：列表已经带回全部字段，
+  // 抽屉直接用手上的行即可，再打一次是多余往返。要做单条深链时再补。
 }
 
 /** admin/tag.py */

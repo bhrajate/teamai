@@ -99,6 +99,49 @@ event_dedup:
 qdrant:
   collection: teamai-memory
 
+# 文本向量化。留空 model 即关闭语义检索：记忆检索回落到「按时间倒序取最近若干
+# 条」，功能退化但不报错。凭据（EMBEDDING_API_KEY）走 .env，留空则复用
+# LLM_API_KEY —— 多数部署里 embedding 与对话走同一个网关、同一把 key。
+#
+# ⚠️ dimensions 必须与所选模型一致，且 Qdrant 的集合维度创建后不可改：
+# 换模型且维度变化时，要么删掉旧集合重启（记忆条目仍在 Postgres，向量索引重建），
+# 要么换一个上面的 collection 名。
+#
+# 常见取值：
+#   text-embedding-3-small / bge-large-zh → 1536
+#   bge-small-zh                          → 512
+#   multilingual-e5-small                 → 384
+# 端点与凭据都走 .env（EMBEDDING_BASE_URL / EMBEDDING_API_KEY）：它们是连接串
+# 与凭据，与 LLM_BASE_URL 同一处理。
+embedding:
+  model: ""  # 例：text-embedding-3-small
+  dimensions: 1536
+
+# 线程历史：按需向平台拉取，不自建消息镜像表（理由见
+# docs/Design-conversation-context.md §2）。
+conversation:
+  # 单次拉取条数上限。再多也会被下方 context.max_messages 压缩掉。
+  history_limit: 30
+  # 缓存时长。取秒级是个权衡：历史要求「秒级新鲜」，缓存久了会把刚发的消息
+  # 漏在上下文外；但完全不缓存会让同一线程里连续几条消息各打一次平台 API，
+  # 很快撞上速率限制（Slack 对非 Marketplace 应用的相关配额收紧过）。
+  cache_ttl_seconds: 45
+
+# 记忆蒸馏：非 @ 消息先进 Redis 滚动窗口，成窗后由 worker 跑一次轻量模型
+# 提炼成结论，原文随即丢弃 —— 聊天原文不入库。
+memory:
+  # 窗口攒够这么多条就蒸馏一次
+  window_size: 20
+  # 窗口静置超过这么久也蒸馏，避免冷清频道的对话一直攒着不落地
+  window_idle_seconds: 600
+
+# Agent 交互记录：存实际组装出的提示词、模型响应、分拆的 in/out token。
+# 补的是审计的缺口 —— audit_logs 只记动作枚举，还原不出「模型当时看到了什么」。
+interactions:
+  # 保留期。<= 0 表示不清理（留给「合规要求永久留存」的部署）。
+  # 这张表含全文，不清理会无限增长；且保留期是对外承诺的一部分，不执行等于没承诺。
+  retention_days: 90
+
 # token 预算的统计周期。周期走满后由 worker 的定时任务清零用量（见下方 jobs），
 # 没有那道巡检的话，配额耗尽的频道会永久停在 EXHAUSTED。
 budget:
@@ -114,6 +157,9 @@ jobs:
   # RUNNING 超时：已被取走、执行中。长任务设计上是小时/天级，故给足 24h；
   # 超过它更可能是 worker 崩在半路、任务永远停在 RUNNING。
   running_timeout_minutes: 1440
+  # 交互记录保留期清理的间隔，与上面的 sweep 分开：保留期是天级的，
+  # 跑得比这密只是白扫表。默认一天一次。
+  purge_interval_minutes: 1440
 
 # Admin API 监听地址与跨源放行。
 # 访问令牌不在这里 —— 它属凭据，见 .env 的 ADMIN_API_TOKEN。

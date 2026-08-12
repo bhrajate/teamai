@@ -19,6 +19,9 @@ class AuditAction(Enum):
     TOOL_DENIED = "tool_denied"
     MEMORY_STORE = "memory_store"
     MEMORY_DELETE = "memory_delete"
+    # 从对话窗口蒸馏出记忆。与 MEMORY_STORE 分开：后者是人或管理员显式写入，
+    # 这个是系统自动提取 —— 排查「记忆库里怎么会有这条」时要能区分来源。
+    MEMORY_DISTILL = "memory_distill"
     POLICY_CHANGE = "policy_change"
     BUDGET_CHANGE = "budget_change"
     AMBIENT_TRIGGER = "ambient_trigger"

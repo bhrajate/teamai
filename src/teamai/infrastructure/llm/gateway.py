@@ -63,6 +63,26 @@ def _normalize(model_id: str) -> str:
     return model_id if provider is not None else f"{DEFAULT_PROVIDER}:{model_id}"
 
 
+def _actual_model_id(result: Any) -> str:
+    """从运行结果里取**实际生效**的模型，拼成 `provider:model`。
+
+    不能拿配置里的档位反推：light 档走 FallbackModel(primary → fallback)，
+    主模型失败时真正跑的是备用模型，而两者单价可能差数倍。交互记录要按这个
+    做成本归因，所以必须问结果本身。
+
+    取不到就返回空串：这只是留痕字段，缺了不影响任务，不值得为它抛异常。
+    """
+    try:
+        response = result.response
+    except Exception:  # pragma: no cover - 无 ModelResponse 的极端情况
+        return ""
+    model = getattr(response, "model_name", None) or ""
+    provider = getattr(response, "provider_name", None) or ""
+    if model and provider:
+        return f"{provider}:{model}"
+    return model
+
+
 class PydanticAIGateway(LLMGateway):
     def __init__(self, config: ModelConfig) -> None:
         self._config = config
@@ -132,4 +152,17 @@ class PydanticAIGateway(LLMGateway):
             result = await agent.run(prompt, usage_limits=limits)
         except UsageLimitExceeded as exc:
             raise TokenBudgetExceeded(str(exc)) from exc
-        return LLMResult(output=str(result.output), tokens=int(getattr(result.usage, "total_tokens", 0)))
+
+        # RunUsage 在 pydantic-ai 2.x 里是 property（早期版本曾是方法），
+        # 且分报 input/output —— 两者单价差数倍，只记 total 没法做成本归因。
+        usage = result.usage
+        tokens_in = int(getattr(usage, "input_tokens", 0) or 0)
+        tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", 0) or 0) or tokens_in + tokens_out
+        return LLMResult(
+            output=str(result.output),
+            tokens=total,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            model_id=_actual_model_id(result),
+        )

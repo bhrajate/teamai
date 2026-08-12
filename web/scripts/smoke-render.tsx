@@ -22,6 +22,7 @@ import { lightTheme } from '../src/theme'
 import { AuditPage } from '../src/routes/AuditPage'
 import { BudgetPage } from '../src/routes/BudgetPage'
 import { ChannelListPage } from '../src/routes/ChannelListPage'
+import { InteractionPage } from '../src/routes/InteractionPage'
 import { MemoryPage } from '../src/routes/MemoryPage'
 import { NotFoundPage } from '../src/routes/NotFoundPage'
 import { OverviewPage } from '../src/routes/OverviewPage'
@@ -41,6 +42,9 @@ const CASES: [string, React.ComponentType, string][] = [
   ['BudgetPage', BudgetPage, `/channels/${CH}/budget`],
   ['PolicyPage', PolicyPage, `/channels/${CH}/policy`],
   ['TagPage', TagPage, `/channels/${CH}/tags`],
+  ['InteractionPage', InteractionPage, `/channels/${CH}/interactions`],
+  // 单任务视图是另一条分支：走 listByTask、多出筛选条、排序反向
+  ['InteractionPage(task)', InteractionPage, `/channels/${CH}/interactions?task=tsk_smoke`],
   ['AuditPage', AuditPage, `/channels/${CH}/audit`],
   ['SettingsPage', SettingsPage, '/settings'],
   ['NotFoundPage', NotFoundPage, '/nope'],

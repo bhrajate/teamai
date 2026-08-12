@@ -10,9 +10,23 @@ import asyncio
 from collections.abc import Sequence
 from datetime import datetime
 
-from teamai.domain.models import AuditLog, BudgetQuota, Task, TaskStatus
+from teamai.domain.models import (
+    AuditLog,
+    BudgetQuota,
+    ChannelInstance,
+    MemoryEntry,
+    Preference,
+    Task,
+    TaskStatus,
+)
 from teamai.domain.ports import MessagePublisher, QueuePayload, ReplyTarget, TaskQueue
-from teamai.domain.repositories import AuditRepository, BudgetRepository, TaskRepository
+from teamai.domain.repositories import (
+    AuditRepository,
+    BudgetRepository,
+    ChannelRepository,
+    MemoryRepository,
+    TaskRepository,
+)
 
 
 class FakeTaskQueue(TaskQueue):
@@ -99,6 +113,68 @@ class FakeMessagePublisher(MessagePublisher):
 
     async def reply(self, target: ReplyTarget, text: str) -> None:
         self.replies.append((target, text))
+
+
+class FakeMemoryRepository(MemoryRepository):
+    """内存记忆仓储。
+
+    `list_by_channel` 按 created_at 倒序，与 SQL 实现一致 —— 顺序是这个方法的
+    契约的一部分（调用方靠它取「最近若干条」），替身若不排序，测试就锁不住它。
+    """
+
+    def __init__(self) -> None:
+        self.stored: list[MemoryEntry] = []
+        self.prefs: list[Preference] = []
+
+    async def store(self, entry: MemoryEntry) -> None:
+        self.stored.append(entry)
+
+    async def list_by_channel(
+        self, channel_instance_id: str, limit: int | None = None
+    ) -> list[MemoryEntry]:
+        out = [e for e in self.stored if e.channel_instance_id == channel_instance_id]
+        out.sort(key=lambda e: e.created_at, reverse=True)
+        return out[:limit] if limit is not None else out
+
+    async def get(self, entry_id: str) -> MemoryEntry | None:
+        return next((e for e in self.stored if e.id == entry_id), None)
+
+    async def delete(self, entry_id: str) -> None:
+        self.stored = [e for e in self.stored if e.id != entry_id]
+
+    async def set_preference(self, pref: Preference) -> None:
+        self.prefs.append(pref)
+
+    async def list_preferences(self, channel_instance_id: str) -> list[Preference]:
+        return [p for p in self.prefs if p.channel_instance_id == channel_instance_id]
+
+
+class FakeChannelRepository(ChannelRepository):
+    def __init__(self, instances: list[ChannelInstance] | None = None) -> None:
+        self.items: dict[str, ChannelInstance] = {i.id: i for i in (instances or [])}
+
+    async def get(self, channel_instance_id: str) -> ChannelInstance | None:
+        return self.items.get(channel_instance_id)
+
+    async def list(self) -> list[ChannelInstance]:
+        return sorted(self.items.values(), key=lambda i: i.created_at, reverse=True)
+
+    async def get_by_platform_channel(
+        self, platform: str, channel_id: str, workspace_id: str
+    ) -> ChannelInstance | None:
+        return next(
+            (
+                i
+                for i in self.items.values()
+                if i.platform == platform
+                and i.channel_id == channel_id
+                and i.workspace_id == workspace_id
+            ),
+            None,
+        )
+
+    async def upsert(self, instance: ChannelInstance) -> None:
+        self.items[instance.id] = instance
 
 
 class FakeAuditRepository(AuditRepository):

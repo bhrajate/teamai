@@ -50,6 +50,25 @@ def _self_session_attr(node: ast.AST) -> str | None:
     return None
 
 
+def _builds_dml(fn: ast.AsyncFunctionDef) -> bool:
+    """函数体里是否构造了 DML 语句（`delete()` / `update()` / `insert()`）。
+
+    扫整个函数体而非只看 `execute()` 的实参：语句通常先赋给变量再执行
+    （`stmt = delete(X).where(...)` 然后 `await self._session.execute(stmt)`），
+    只匹配内联实参会漏掉这种最常见的写法。
+
+    不做 SQL 解析，只认这三个构造器的名字 —— select 走读路径，不算写。
+    """
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"delete", "update", "insert"}
+        ):
+            return True
+    return False
+
+
 def _mutates(fn: ast.AsyncFunctionDef) -> bool:
     """方法是否改动了数据。
 
@@ -59,6 +78,10 @@ def _mutates(fn: ast.AsyncFunctionDef) -> bool:
     for node in ast.walk(fn):
         name = _self_session_attr(node)
         if name in _MUTATING_CALLS and name != "execute":
+            return True
+        # `session.execute(delete(...))` —— 批量 DML 不经 add/merge/delete，
+        # 但确实改数据且必须 commit。
+        if name == "execute" and _builds_dml(fn):
             return True
         # `m.active = active` —— 对非 self 对象的属性赋值视为改模型
         if isinstance(node, ast.Assign):

@@ -9,6 +9,7 @@ from __future__ import annotations
 from teamai.infrastructure.repositories.audit import SQLAuditRepository
 from teamai.infrastructure.repositories.budget import SQLBudgetRepository
 from teamai.infrastructure.repositories.channel import SQLChannelRepository
+from teamai.infrastructure.repositories.interaction import SQLInteractionRepository
 from teamai.infrastructure.repositories.memory import SQLMemoryRepository
 from teamai.infrastructure.repositories.policy import SQLPolicyRepository
 from teamai.infrastructure.repositories.tag import SQLTagRepository
@@ -18,6 +19,7 @@ __all__ = [
     "SQLAuditRepository",
     "SQLBudgetRepository",
     "SQLChannelRepository",
+    "SQLInteractionRepository",
     "SQLMemoryRepository",
     "SQLPolicyRepository",
     "SQLTagRepository",

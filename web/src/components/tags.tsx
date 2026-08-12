@@ -4,6 +4,7 @@ import type {
   AuditAction,
   AuditResult,
   BudgetState,
+  InteractionResult,
   MemoryType,
   TaskStatus,
 } from '@/api/types'
@@ -56,6 +57,17 @@ const AUDIT_RESULT = {
   PAUSED: { label: '暂停', color: 'warning' },
 } satisfies Record<AuditResult, Meta>
 
+/**
+ * 交互结果。与 AUDIT_RESULT 分开一张表而非复用：两者枚举不同（这里无 DENIED，
+ * 且成功态叫 DONE），合用会让「后端加了枚举值这里漏补」失去编译期保护。
+ * 颜色刻意与审计对齐 —— 同一次调用在两个页面里出现时该同色。
+ */
+const INTERACTION_RESULT = {
+  DONE: { label: '完成', color: 'success' },
+  PAUSED: { label: '暂停', color: 'warning' },
+  FAILED: { label: '失败', color: 'error' },
+} satisfies Record<InteractionResult, Meta>
+
 const BUDGET_STATE = {
   ACTIVE: { label: '正常', color: 'success' },
   EXHAUSTED: { label: '已耗尽', color: 'error' },
@@ -96,6 +108,11 @@ export const AuditResultTag = ({ value }: { value: AuditResult }) => {
   return <Tag color={m.color}>{m.label}</Tag>
 }
 
+export const InteractionResultTag = ({ value }: { value: InteractionResult }) => {
+  const m = pick(INTERACTION_RESULT, value)
+  return <Tag color={m.color}>{m.label}</Tag>
+}
+
 export const BudgetStateTag = ({ value }: { value: BudgetState }) => {
   const m = pick(BUDGET_STATE, value)
   return <Tag color={m.color}>{m.label}</Tag>
@@ -130,5 +147,10 @@ export const AUDIT_RESULT_OPTIONS = Object.entries(AUDIT_RESULT).map(([value, m]
 
 export const MEMORY_TYPE_OPTIONS = Object.entries(MEMORY_TYPE).map(([value, m]) => ({
   value: value as MemoryType,
+  text: m.label,
+}))
+
+export const INTERACTION_RESULT_OPTIONS = Object.entries(INTERACTION_RESULT).map(([value, m]) => ({
+  value: value as InteractionResult,
   text: m.label,
 }))

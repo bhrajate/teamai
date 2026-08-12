@@ -8,7 +8,9 @@
 
 - **同步问答**：闲聊、查询类消息秒级回复，走轻量模型
 - **异步长任务**：代码审查、Bug 修复、数据分析、文档、PR 操作这类要多轮工具调用的意图自动入队，交 worker 进程执行，完成后回帖。判据是「耗时可能超过平台 3 秒事件窗口」，不是「是否用贵模型」
-- **频道记忆**：从对话中积累知识并在后续任务中检索复用，频道间默认隔离
+- **线程上下文**：被 @ 时按需向平台拉取当前线程的最近消息，不镜像聊天记录（理由见 `docs/Design-conversation-context.md`）
+- **频道记忆**：非 @ 消息先进滚动窗口，由 worker 定期蒸馏成结论后入库，原文即弃；频道间默认隔离，私聊内容不进记忆
+- **交互留痕**：每次 Agent 调用记下实际提示词、响应、生效模型与分拆的 in/out token，供复现与成本核算，按保留期清理
 - **预算与审计**：按频道核算 token 配额，超限暂停；每个动作留审计记录
 - **权限策略**：按频道白名单控制可用工具
 
@@ -105,9 +107,11 @@ adapters/        平台适配与 Admin API（唯一的 SDK 依赖点）
   ├── feishu/    crypto / translator / callback / ws / connector
   └── admin/     FastAPI 路由，按资源分模块
 application/     用例编排：router / intent / orchestrator / budget / memory / tag
+                 conversation（拉线程历史）/ distiller（蒸馏记忆）/ interaction（留痕）
   └── agent/     runtime / context / prompts
 domain/          模型、端口、仓储接口、领域服务（零内部依赖）
-infrastructure/  DB / 仓储实现 / 队列 / 向量库 / 调度 / LLM 网关 / 工具 / 出向消息
+infrastructure/  DB / 仓储实现 / 队列 / 向量库 / 调度 / LLM 网关 / embedding
+                 工具 / 消息收发（出向 publisher + 入向 reader）/ 蒸馏窗口
 ```
 
 `application` 与 `domain` 不出现任何平台词汇或 SDK 依赖，接新平台只需加一个 `adapters/<平台>/` 子包并在 `app/backend/main.py` 的 `CONNECTOR_BUILDERS` 登记。
@@ -136,7 +140,8 @@ worker 里两个定时任务都不可缺：预算周期重置（否则耗尽配�
 | `GET/PUT /api/channels/{id}/budget` | token 预算 |
 | `GET/PUT /api/channels/{id}/policy` | 权限策略 |
 | `GET /api/channels/{id}/tasks` | 任务查询 |
-| `GET /api/channels/{id}/audit` | 审计查询 |
+| `GET /api/channels/{id}/audit` | 审计查询（动作流水） |
+| `GET /api/channels/{id}/interactions`、`GET /api/tasks/{task_id}/interactions`、`GET /api/interactions/{id}` | 交互记录：模型看到的提示词与响应全文。只读 —— 由运行时产生，人工写入会污染成本统计；删除走保留期巡检 |
 | `GET/POST /api/channels/{id}/tags`、`PATCH/DELETE /api/channels/{id}/tags/{tag_id}` | 标签：列举、创建、启停、删除 |
 
 未配预算或策略的频道，对应的 `GET` 返回 404 —— 那表示「还没配」，不是故障。
@@ -166,7 +171,7 @@ make web-check      # 类型检查 + 各页面渲染冒烟
 
 ### 页面
 
-顶栏切频道，侧栏走资源页。信息架构直接照 API 长 —— 十二条路径里有九条挂在 `/channels/{channel_instance_id}` 下（其余三条是 `/health`、`/tools` 与按条目 id 删记忆），所以先选频道，再选看什么。
+顶栏切频道，侧栏走资源页。信息架构直接照 API 长 —— 十五条路径里有九条挂在 `/channels/{channel_instance_id}` 下（其余六条是 `/health`、`/channels`、`/tools`，以及按条目 id 取用的删记忆、单条交互记录、按任务查交互记录），所以先选频道，再选看什么。
 
 | 页面 | 能做什么 |
 |---|---|

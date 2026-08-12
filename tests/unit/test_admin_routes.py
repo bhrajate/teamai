@@ -29,6 +29,11 @@ EXPECTED_ROUTES = {
     ("GET", "/api/channels/{channel_instance_id}/policy"),
     ("GET", "/api/channels/{channel_instance_id}/tags"),
     ("GET", "/api/channels/{channel_instance_id}/tasks"),
+    # 交互记录只读：由 AgentRuntime 执行时产生，人工写入会污染审计与成本统计；
+    # 删除走 worker 的保留期巡检，不给手动入口。
+    ("GET", "/api/channels/{channel_instance_id}/interactions"),
+    ("GET", "/api/tasks/{task_id}/interactions"),
+    ("GET", "/api/interactions/{interaction_id}"),
     ("GET", "/api/health"),
     ("GET", "/api/tools"),
     ("POST", "/api/channels/{channel_instance_id}/memories"),

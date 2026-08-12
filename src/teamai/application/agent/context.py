@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from teamai.domain.models import ChannelInstance, MemoryEntry, PermissionPolicy, TagTemplate
+from teamai.domain.ports import ThreadMessage
 
 
 @dataclass
@@ -18,7 +19,13 @@ class ContextBundle:
     policy: PermissionPolicy | None
     allowed_tools: list[str] = field(default_factory=list)
     memory_hits: list[MemoryEntry] = field(default_factory=list)
-    thread_history: list[str] = field(default_factory=list)
+    # 线程历史。存结构化的 ThreadMessage 而非裸字符串：渲染成提示词时要标出
+    # 发言人、并区分机器人自己的上一轮输出 —— 两者混作一堆无署名的文本时，
+    # 模型容易把自己说过的话当成用户诉求。
+    thread_history: list[ThreadMessage] = field(default_factory=list)
+    # 压缩掉的条数。>0 时提示词里会插一行说明，让模型知道自己看的是截断视图，
+    # 而不是把「历史只有这么多」当成事实。
+    dropped_history: int = 0
     tag: TagTemplate | None = None
 
     @property
@@ -26,23 +33,43 @@ class ContextBundle:
         """将记忆命中拼为上下文文本。"""
         if not self.memory_hits:
             return ""
-        lines = []
-        for entry in self.memory_hits:
-            lines.append(f"- {entry.content}")
+        return "\n".join(f"- {entry.content}" for entry in self.memory_hits)
+
+    @property
+    def history_context(self) -> str:
+        """将线程历史拼为上下文文本，必要时带截断说明。"""
+        if not self.thread_history:
+            return ""
+        lines = [m.render() for m in self.thread_history]
+        if self.dropped_history > 0:
+            lines.insert(0, f"[更早的 {self.dropped_history} 条已省略，如需细节请明确询问]")
         return "\n".join(lines)
 
-    def compact(self, max_history: int, summary_threshold: int) -> ContextBundle:
-        """上下文压缩：线程历史超阈值时，将最旧部分摘要为一行提示。
+    @property
+    def memory_ref_ids(self) -> list[str]:
+        """本次引用到的记忆条目 id，供交互记录留痕。
 
-        返回新 bundle，不修改自身（保持可追溯）。
+        留 id 而非内容：记忆被删除后审计链仍指向它，但库里不会留第二份副本。
+        """
+        return [e.id for e in self.memory_hits]
+
+    def compact(self, max_history: int, summary_threshold: int) -> ContextBundle:
+        """上下文压缩：线程历史超阈值时丢弃最旧部分，只保留最近 max_history 条。
+
+        返回新 bundle，不修改自身（保持可追溯）。被丢弃的条数记进
+        `dropped_history`，由 `history_context` 渲染成一行说明 —— 此前的做法是
+        把说明文案直接混进历史列表，于是那行字与真实消息在类型上不可区分，
+        既没法统计丢了多少，也会被后续处理当成一条真消息。
+
+        summary_threshold 目前不参与判定，保留形参是为了兼容调用方与配置项：
+        真正的「摘要化」需要额外一次 LLM 调用，那是独立决策（见
+        docs/Design-conversation-context.md §3.1），未做之前多留一个参数比
+        改动全部调用点更划算。
         """
         if len(self.thread_history) <= max_history:
             return self
         dropped = len(self.thread_history) - max_history
-        recent = self.thread_history[-max_history:]
-        summary = f"[已压缩 {dropped} 条更早消息，历史早于此处；如需细节请明确询问]"
-        merged = [summary] + recent
-        new_bundle = ContextBundle(
+        return ContextBundle(
             task_id=self.task_id,
             channel_instance_id=self.channel_instance_id,
             user_prompt=self.user_prompt,
@@ -52,7 +79,7 @@ class ContextBundle:
             policy=self.policy,
             allowed_tools=list(self.allowed_tools),
             memory_hits=list(self.memory_hits),
-            thread_history=merged,
+            thread_history=self.thread_history[-max_history:],
+            dropped_history=self.dropped_history + dropped,
             tag=self.tag,
         )
-        return new_bundle

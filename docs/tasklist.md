@@ -125,4 +125,24 @@
    - 修 `PUT /budget`：原先每次 `gen_id("bq")` 生成新 id，而 `upsert` 走 `session.merge` 按主键匹配，故是 INSERT 而非 UPDATE；`budget_quotas` 无 channel 唯一约束、`get_for_channel` 又 `.first()` 无排序，导致管理员改完上限读回的仍是旧行，看起来「改了没生效」。改为复用既有 id 原地更新，用量与周期起点保留，新上限高于已用量时把 EXHAUSTED 放回 ACTIVE
    - 新增测试 49 条：`test_admin_auth.py`（22）、`test_channel_service.py`（9）、`test_budget_configure.py`（9，打真 SQL）、`test_prompts.py`（9）
 
+- [x] 17. 会话上下文与记忆存储改造（设计见 `docs/Design-conversation-context.md`）
+   - 定性问题：库里八张表不存消息，但代码一直在存 —— router 把每条非 @ 消息截到 500 字塞进 `memory_entries`，一张语义上属于「结论」的表。由此派生五个缺陷，两个是故障级
+   - 故障级一：记忆检索退化成随机取样。`list_by_channel` 无 ORDER BY 无 LIMIT，调用方却在 Python 侧切前 5 条，行序由数据库决定，且随频道使用时长线性变慢
+   - 故障级二：向量路径是死代码。`MemoryService` 收 `embedder` 但组合根从未注入（只传了 `vector_store`），故 Qdrant 从未被写入、语义检索分支永不进入 —— 上一条的无界扫描是生产唯一路径，而非「降级」路径。顺带暴露 Qdrant 集合维度硬编码 384 与常见模型 1536 不匹配，此前被「embedder 从未注入」掩盖
+   - 另三处：`thread_history` 字段与压缩逻辑齐备但生产代码从不赋值（机器人被 @ 时看不见上一句）；`Visibility` 枚举建好却无人判定，单聊内容照样进频道记忆（PRD §4.2 承诺未落地）；`audit_logs` 只记动作枚举，还原不出实际提示词与响应
+   - 定论：不做全量镜像。容量不是理由（73 万行/年、150MB，Postgres 毫无压力），真正的理由是所有权与合规（GDPR 删除权无从落实、IM 的逐条消息 ACL 会被镜像拍平）、时效性（编辑与撤回后镜像滞后）、以及它不解决真正的缺口
+   - 三层架构：原始消息按需拉平台（`ThreadReader` 端口 + Slack/飞书实现 + Redis 45s 缓存）；`agent_interactions` 表存机器人自己的交互（提示词、响应、实际生效的 `model_id`、分拆 in/out token、`context_refs` 存引用而非快照），按保留期清理；`memory_entries` 回归结论 —— 非 @ 消息进 Redis 滚动窗口，worker 定时蒸馏，原文即弃
+   - 飞书线程拉取的结构性差异：没有「按根消息 ID 拉整串」的接口，`container_id_type` 只接受 `chat` 与 `thread`，而 `thread` 要的是话题群的 `omt_` ID，与我们持有的 `om_` 根消息 ID 不是一回事。故按 chat 拉最近一批再按 `root_id` 客户端过滤，代价是多拉后丢弃，换来不依赖话题群这个前提
+   - 蒸馏的两个取舍：放 worker 而非 router 内判断窗口是否已满（否则某条恰好触发阈值的普通消息要承担一次 LLM 调用延迟，而发送者根本没 @ 机器人）；配额不足时跳过但**不 drain** 窗口（预算暂停的预期是「任务先不跑」，不该顺带丢掉记忆素材）。蒸馏 token 计入频道配额，否则后台任务会绕过「预算硬上限」这条正确性属性
+   - 新增 worker 定时任务两个：记忆蒸馏（挂 sweep 间隔）、交互记录保留期清理（独立的天级间隔）
+   - Admin 补三个只读端点：按频道/按任务/按 id 查交互记录。有意不给写入与删除入口 —— 人工写入会污染成本统计，审计类数据的删除应是策略性的
+   - 清理脚本 `scripts/cleanup_chat_memories.py`：dry-run 默认，`--apply` 才删。阈值实测校准过 —— 初值 25 会删掉只有 23 字符的「订单服务的超时阈值是 30 秒，由网关侧统一配置」，中文每字符信息量远高于英文，改为 12
+   - 触发并按其意图修正两处既有守卫：`test_不含凭据字段` 拦下写进 yaml 的 `embedding.base_url`（连接串应走 .env）；`test_只读方法不提交` 误判 `purge_before`，根因是 `_mutates` 认不出 `session.execute(delete(...))`，补 `_builds_dml` 扫函数体
+   - 新增测试 65 条：`test_distiller.py`（17）、`test_conversation.py`（14）、`test_memory.py`（13）、`test_interaction.py`（11，打真 SQL）、`test_window.py`（10）；另扩 router / runtime / worker_jobs 各若干条
+   - 真依赖验证：迁移对真 Postgres 跑 upgrade→downgrade→upgrade 往返（含枚举类型清理）；Admin 端点起真 web 进程读回全字段；Redis 窗口验 NX 首写时间不被刷新与 drain 无残留；清理脚本对真库造数据跑两种模式
+
+- [ ]* 17.1 补 `error_spike` ambient 规则（现在有数据源了，但需给滚动窗口加只读不清空的取数方法 —— 它要的是按关键词聚合计数，不是蒸馏成记忆）
+- [ ]* 17.2 上下文摘要化（`compact()` 目前是「丢弃最旧 + 说明丢了几条」，真摘要要多一次 LLM 调用；配置项与形参已预留）
+- [ ]* 17.3 实测 Slack `conversations.replies` 的速率配额，据此定 `conversation_cache_ttl_seconds` 终值
+
 - [ ] 16. 检查点 - 全量测试通过并汇报整体实施结果

@@ -7,10 +7,20 @@
 本文件是规则引擎骨架 + `thread_stale` 一条规则。规则按 `trigger` 注册进
 `_HANDLERS`，新增规则只加一个 handler，`sweep()` 不改。
 
-为什么只有一条规则：另两条（`error_spike` / `deploy_status`）都缺数据源 ——
-前者要扫频道消息正文，后者要 CI 的入向 webhook，而库里没有消息历史表
-（八张表都不存 message），也没有对外的 webhook 入口。补这两样各自是独立决策，
-见 sweep 下方的注释。
+为什么只有一条规则：另两条（`error_spike` / `deploy_status`）仍缺可用的数据源。
+
+`deploy_status` 要 CI 的入向 webhook，而项目没有对外的 webhook 入口。
+
+`error_spike` 的情况变了但还不够：会话上下文改造后，非 @ 消息会进 `MessageWindow`
+滚动缓冲（见 application/distiller.py），正文终于有地方可读。但那个端口只有
+`drain`（取出即清空）—— 它是为蒸馏设计的，而 error_spike 要的是「按错误关键词
+聚合计数」且不能把素材吃掉，否则记忆蒸馏就拿不到了。补它需要给端口加一个只读
+不清空的取数方法，那是独立决策。
+
+注意仍然**没有**消息历史表：原始聊天记录不入库，以平台为唯一权威源，
+理由见 docs/Design-conversation-context.md §2。所以 error_spike 的窗口天然只有
+分钟级，做不了「过去 24 小时的错误趋势」那类规则 —— 那种需求应该接监控系统，
+而不是靠翻聊天记录。
 
 由 worker 的定时任务驱动（app/worker/main.py 的 register_jobs），与超时巡检
 分开：那个是运维兜底、判 FAILED；这个是产品行为、给人发提醒。
