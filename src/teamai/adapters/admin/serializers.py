@@ -41,6 +41,12 @@ def memory_to_dict(entry: MemoryEntry) -> dict[str, Any]:
         "content": entry.content,
         "type": entry.type.value,
         "source_user_id": entry.source_user_id,
+        # 产生方式（DISTILLED / MANUAL / EDITED）。与 source_user_id 并列输出：
+        # 后者对蒸馏产出与管理台写入都是 null，只有这个字段能区分它们。
+        "source": entry.source.value,
+        "visibility": entry.visibility.value,
+        # 有值即已建向量索引，据此能查出漏索引的条目
+        "embedding_ref": entry.embedding_ref,
         "created_at": entry.created_at.isoformat(),
     }
 

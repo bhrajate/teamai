@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from teamai.application.agent.prompts import DISTILL_NONE, DISTILL_SYSTEM_PROMPT, build_distill_prompt
 from teamai.application.budget import BudgetController
 from teamai.application.memory import MemoryService
-from teamai.domain.models import AuditAction, MemoryType
+from teamai.domain.models import AuditAction, MemorySource, MemoryType
 from teamai.domain.ports import LLMGateway, MessageWindow, TokenBudgetExceeded
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,7 @@ class MemoryDistiller:
                 channel_instance_id,
                 content,
                 type=mem_type,
+                source=MemorySource.DISTILLED,
                 action=AuditAction.MEMORY_DISTILL,
             )
         logger.info(

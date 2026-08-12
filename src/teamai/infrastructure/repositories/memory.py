@@ -17,6 +17,7 @@ def _memory_to_model(e: MemoryEntry) -> MemoryEntryModel:
         content=e.content,
         type=e.type,
         source_user_id=e.source_user_id,
+        source=e.source,
         visibility=e.visibility,
         embedding_ref=e.embedding_ref,
         created_at=e.created_at,
@@ -30,6 +31,7 @@ def _model_to_memory(m: MemoryEntryModel) -> MemoryEntry:
         content=m.content,
         type=m.type,
         source_user_id=m.source_user_id,
+        source=m.source,
         visibility=m.visibility,
         embedding_ref=m.embedding_ref,
         created_at=m.created_at,
@@ -88,6 +90,16 @@ class SQLMemoryRepository(MemoryRepository):
     async def get(self, entry_id: str) -> MemoryEntry | None:
         m = await self._session.get(MemoryEntryModel, entry_id)
         return _model_to_memory(m) if m else None
+
+    async def update(self, entry: MemoryEntry) -> None:
+        """原地更新。走 merge 而非 add：后者对已存在的主键会撞唯一约束。
+
+        ⚠️ merge 按主键匹配，所以传进来的 entry 必须带原 id ——
+        换个新 id 就是 INSERT 而不是 UPDATE（`budget_quotas` 上踩过，
+        表现是「改完读回的还是旧行」）。
+        """
+        await self._session.merge(_memory_to_model(entry))
+        await self._session.commit()
 
     async def delete(self, entry_id: str) -> None:
         m = await self._session.get(MemoryEntryModel, entry_id)

@@ -141,6 +141,16 @@
    - 新增测试 65 条：`test_distiller.py`（17）、`test_conversation.py`（14）、`test_memory.py`（13）、`test_interaction.py`（11，打真 SQL）、`test_window.py`（10）；另扩 router / runtime / worker_jobs 各若干条
    - 真依赖验证：迁移对真 Postgres 跑 upgrade→downgrade→upgrade 往返（含枚举类型清理）；Admin 端点起真 web 进程读回全字段；Redis 窗口验 NX 首写时间不被刷新与 drain 无残留；清理脚本对真库造数据跑两种模式
 
+- [x] 18. 记忆的删除与编辑（设计见 `docs/Design-conversation-context.md` §6.5）
+   - 修「删除不清向量索引」：`VectorStore` 加 `delete`，Qdrant 侧按 payload 的 `entry_id` 过滤删除而非反推 point id（不依赖 id 推导，否则改了映射方案漏改一边会静默变 no-op）。删向量失败只告警 —— Postgres 行是权威源且已删，为向量库故障报错会让用户以为没删掉
+   - 修「向量写入从未成功过」：`upload_points` 的 points 必须是 `PointStruct`，传 dict 会抛 AttributeError 而调用方把它吞成 warning。此前被「embedder 从未注入、这段代码没被执行」掩盖。另记 SDK 的不一致：`delete` 的 points_selector 只收模型对象，而 `query_points` 的 query_filter 收 dict
+   - 修「`embedding_ref` 从未被赋值」：`upsert` 改为返回可回填的引用（映射规则是基础设施层细节，不该让用例层推导），回填后落库。清理脚本里 `embedding_ref IS NULL` 这个条件从此名副其实
+   - 新增编辑：`MemoryRepository.update` + `MemoryService.edit` + `PATCH /api/memories/{entry_id}`，可改 content 与 type，保留 id / created_at / visibility。**改内容必须重算向量，且重算失败要删掉旧向量而不是留着** —— 留着比没索引更糟，检索会持续按已改掉的内容命中它。有意不支持改 visibility（private→channel 属权限变更）。type 非法值立即 400，不沿用蒸馏解析的宽容策略
+   - 新增 `source` 字段（DISTILLED / MANUAL / EDITED）：`source_user_id` 答「哪个用户的话变成了这条」，对蒸馏与管理台写入都是 NULL，控制台里两者不可区分；而这张表直接影响机器人回答，「谁写的」是出问题时第一个要问的。迁移把已有行回填 DISTILLED 而非 MANUAL —— 改造前那些行确实是系统塞进去的聊天碎片
+   - **连带修一个已进主干的缺陷**：`AuditAction` 上次加 `MEMORY_DISTILL` 时没迁移 Postgres 的 `auditaction` 类型，于是记忆蒸馏在任何已升级的库上都失败（新库经 create_all 正常，故本地与 CI 都看不出来）。补迁移，并加 `test_enum_migrations.py` 静态兜住这一类 —— 该守卫本身也验证过（临时加一个未迁移的值确实变红）
+   - 前端：`memoryApi.update`、编辑按钮（Modal 改双模式）、「产生方式」与「索引」两列、现有「来源」列改名「来源用户」；补 `memory_distill` / `memory_edit` 两个漏掉的审计动作映射（`satisfies Record<AuditAction, Meta>` 让这个漏项直接编译报错）
+   - 新增测试 50 条：`test_memory.py` 扩至 31、`test_memory_repository.py`（10，打真 SQL，含「换 id 会变成 INSERT」这个坑本身）、`test_vector.py`（10，用假 client 断言传给 SDK 的参数形态）、`test_enum_migrations.py`（12）
+
 - [ ]* 17.1 补 `error_spike` ambient 规则（现在有数据源了，但需给滚动窗口加只读不清空的取数方法 —— 它要的是按关键词聚合计数，不是蒸馏成记忆）
 - [ ]* 17.2 上下文摘要化（`compact()` 目前是「丢弃最旧 + 说明丢了几条」，真摘要要多一次 LLM 调用；配置项与形参已预留）
 - [ ]* 17.3 实测 Slack `conversations.replies` 的速率配额，据此定 `conversation_cache_ttl_seconds` 终值

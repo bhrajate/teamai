@@ -5,6 +5,7 @@ import type {
   AuditResult,
   BudgetState,
   InteractionResult,
+  MemorySource,
   MemoryType,
   TaskStatus,
 } from '@/api/types'
@@ -37,6 +38,16 @@ const MEMORY_TYPE = {
   FACT: { label: '事实', color: 'cyan' },
 } satisfies Record<MemoryType, Meta>
 
+/**
+ * 记忆的产生方式。用无色/灰调而非彩色：它是审计维度而非状态，
+ * 抢了类型标签（彩色）的视觉焦点反而妨碍扫读。
+ */
+const MEMORY_SOURCE = {
+  DISTILLED: { label: '自动蒸馏', color: 'default' },
+  MANUAL: { label: '人工写入', color: 'blue' },
+  EDITED: { label: '蒸馏后修改', color: 'orange' },
+} satisfies Record<MemorySource, Meta>
+
 const AUDIT_ACTION = {
   task_create: { label: '创建任务', color: 'blue' },
   task_transition: { label: '任务流转', color: 'geekblue' },
@@ -45,6 +56,9 @@ const AUDIT_ACTION = {
   tool_denied: { label: '工具被拒', color: 'volcano' },
   memory_store: { label: '写入记忆', color: 'purple' },
   memory_delete: { label: '删除记忆', color: 'magenta' },
+  // 系统蒸馏与人工写入分开着色：排查「记忆库里怎么会有这条」时先要分清来源
+  memory_distill: { label: '蒸馏记忆', color: 'blue' },
+  memory_edit: { label: '修改记忆', color: 'orange' },
   policy_change: { label: '策略变更', color: 'orange' },
   budget_change: { label: '预算变更', color: 'gold' },
   ambient_trigger: { label: '主动介入', color: 'lime' },
@@ -91,6 +105,21 @@ export const TaskStatusTag = ({ value }: { value: TaskStatus }) => {
 export const MemoryTypeTag = ({ value }: { value: MemoryType }) => {
   const m = pick(MEMORY_TYPE, value)
   return <Tag color={m.color}>{m.label}</Tag>
+}
+
+const MEMORY_SOURCE_HINT: Record<MemorySource, string> = {
+  DISTILLED: '由模型从频道对话中自动提炼，未经人工确认',
+  MANUAL: '由人经控制台或 Admin API 直接写入',
+  EDITED: '原为自动蒸馏，之后被人工修正过',
+}
+
+export const MemorySourceTag = ({ value }: { value: MemorySource }) => {
+  const m = pick(MEMORY_SOURCE, value)
+  return (
+    <Tooltip title={MEMORY_SOURCE_HINT[value] ?? value}>
+      <Tag color={m.color}>{m.label}</Tag>
+    </Tooltip>
+  )
 }
 
 export const AuditActionTag = ({ value }: { value: AuditAction }) => {
@@ -147,6 +176,11 @@ export const AUDIT_RESULT_OPTIONS = Object.entries(AUDIT_RESULT).map(([value, m]
 
 export const MEMORY_TYPE_OPTIONS = Object.entries(MEMORY_TYPE).map(([value, m]) => ({
   value: value as MemoryType,
+  text: m.label,
+}))
+
+export const MEMORY_SOURCE_OPTIONS = Object.entries(MEMORY_SOURCE).map(([value, m]) => ({
+  value: value as MemorySource,
   text: m.label,
 }))
 

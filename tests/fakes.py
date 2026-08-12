@@ -139,6 +139,14 @@ class FakeMemoryRepository(MemoryRepository):
     async def get(self, entry_id: str) -> MemoryEntry | None:
         return next((e for e in self.stored if e.id == entry_id), None)
 
+    async def update(self, entry: MemoryEntry) -> None:
+        """按 id 原地替换。id 不存在则忽略 —— 与 merge 的语义不同（那个会
+        INSERT），但替身不必模拟那个坑，仓储层的 SQL 测试已经覆盖它。"""
+        for i, e in enumerate(self.stored):
+            if e.id == entry.id:
+                self.stored[i] = entry
+                return
+
     async def delete(self, entry_id: str) -> None:
         self.stored = [e for e in self.stored if e.id != entry_id]
 

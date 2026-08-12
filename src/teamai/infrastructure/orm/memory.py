@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from teamai.domain.models.memory import MemoryType, Visibility
+from teamai.domain.models.memory import MemorySource, MemoryType, Visibility
 from teamai.infrastructure.db import Base
 
 
@@ -20,6 +20,12 @@ class MemoryEntryModel(Base):
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType))
     # 飞书 user_id（ou_+32hex）超旧宽度，加宽
     source_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 产生方式。与 source_user_id 是两件事：那个是「哪个用户的话变成了这条」，
+    # 这个是「这条是谁写下的」—— 蒸馏产出与管理台写入的 source_user_id 都是
+    # NULL，只有这一列能区分它们。
+    source: Mapped[MemorySource] = mapped_column(
+        Enum(MemorySource), default=MemorySource.MANUAL
+    )
     visibility: Mapped[Visibility] = mapped_column(Enum(Visibility), default=Visibility.CHANNEL)
     embedding_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

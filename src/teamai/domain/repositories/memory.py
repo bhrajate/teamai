@@ -27,6 +27,17 @@ class MemoryRepository(ABC):
     async def get(self, entry_id: str) -> MemoryEntry | None: ...
 
     @abstractmethod
+    async def update(self, entry: MemoryEntry) -> None:
+        """原地更新。
+
+        ⚠️ 实现须复用传入 entry 的 id。走 `session.merge` 时按主键匹配，
+        传一个新 id 进去是 INSERT 而非 UPDATE —— `budget_quotas` 上踩过这个坑
+        （见 BudgetController.configure_channel_quota 的说明），那次的表现是
+        「管理员改完上限读回的仍是旧行」。
+        """
+        ...
+
+    @abstractmethod
     async def delete(self, entry_id: str) -> None: ...
 
     @abstractmethod

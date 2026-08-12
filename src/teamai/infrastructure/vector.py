@@ -10,9 +10,25 @@ from teamai.domain.models import MemoryEntry
 
 
 class VectorStore(Protocol):
-    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> None: ...
+    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> str | None:
+        """写入/覆盖向量，返回可回填到 `MemoryEntry.embedding_ref` 的引用。
+
+        返回引用而不是让调用方自己推导：point id 的映射规则是本层的实现细节，
+        用例层不该知道它（delete 也刻意不依赖它，见下）。降级到内存实现时同样
+        返回一个非空值，因为「已建索引」这个语义仍然成立。
+        """
+        ...
 
     async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]: ...
+
+    async def delete(self, entry_id: str) -> None:
+        """删掉某条记忆的向量。
+
+        必须有这个方法：删除记忆时若只删 Postgres 行，向量会留在库里继续被
+        检索命中，随后因取不到实体而被过滤掉 —— 不会泄露已删内容，但白占
+        top_k 名额，删得多了检索质量静默下降。
+        """
+        ...
 
 
 class _InMemoryVectorStore:
@@ -21,8 +37,9 @@ class _InMemoryVectorStore:
     def __init__(self) -> None:
         self._vectors: dict[str, tuple[str, list[float]]] = {}
 
-    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> None:
+    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> str | None:
         self._vectors[entry.id] = (entry.channel_instance_id, embedding)
+        return entry.id
 
     async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]:
         def _cosine(a: list[float], b: list[float]) -> float:
@@ -38,6 +55,9 @@ class _InMemoryVectorStore:
         ]
         scored.sort(key=lambda p: p[1], reverse=True)
         return [eid for eid, _ in scored[:top_k]]
+
+    async def delete(self, entry_id: str) -> None:
+        self._vectors.pop(entry_id, None)
 
 
 class QdrantVectorStore:
@@ -61,22 +81,48 @@ class QdrantVectorStore:
         self._client = None
         self._fallback = _InMemoryVectorStore()
 
-    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> None:
+    @staticmethod
+    def point_id(entry_id: str) -> uuid.UUID:
+        """记忆 id → Qdrant point id。
+
+        Qdrant 的 point id 只接受整数或 UUID，而我们的 id 是 `mem_<ULID>`，
+        故用 uuid5 做确定性映射（同一 entry_id 恒得同一 point，重复 upsert
+        即覆盖而非堆积）。
+        """
+        return uuid.uuid5(uuid.NAMESPACE_DNS, entry_id)
+
+    async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> str | None:
+        """写入/覆盖一条记忆的向量。返回 point id 供调用方回填 embedding_ref。
+
+        ⚠️ points 必须传 `PointStruct` 而不是 dict：qdrant-client 的
+        `upload_points` 会直接取 `record.id`，传 dict 会抛
+        `AttributeError: 'dict' object has no attribute 'id'`。改造前这里传的
+        正是 dict，而调用方（MemoryService._embed_if_available）把异常吞成一条
+        warning —— 于是向量写入**从未成功过**，且不报错。这个缺陷此前被
+        「embedder 从未注入、这段代码根本没被执行」掩盖着。
+        """
         if self._client is None:
             await self._ensure_client()
         if self._client is None:  # 降级
-            await self._fallback.upsert(entry, embedding)
-            return
+            return await self._fallback.upsert(entry, embedding)
+
+        from qdrant_client.models import PointStruct
+
+        point_id = str(self.point_id(entry.id))
         self._client.upload_points(
             collection_name=self._collection,
             points=[
-                {
-                    "id": uuid.uuid5(uuid.NAMESPACE_DNS, entry.id),
-                    "vector": embedding,
-                    "payload": {"entry_id": entry.id, "channel_instance_id": entry.channel_instance_id},
-                }
+                PointStruct(
+                    id=point_id,
+                    vector=embedding,
+                    payload={
+                        "entry_id": entry.id,
+                        "channel_instance_id": entry.channel_instance_id,
+                    },
+                )
             ],
         )
+        return point_id
 
     async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]:
         if self._client is None:
@@ -92,6 +138,34 @@ class QdrantVectorStore:
             limit=top_k,
         ).points
         return [h.payload["entry_id"] for h in hits]
+
+    async def delete(self, entry_id: str) -> None:
+        """按 payload 里的 entry_id 过滤删除，而非按 point_id 直接删。
+
+        两种都可行，选过滤是因为它不依赖 id 推导：按 point id 删要求这里与
+        upsert 侧的推导逐字一致，哪天改了映射方案却漏改一边，删除会静默变成
+        no-op —— 恰好是本方法要修的那类缺陷（删了行但向量还在）。单点删除在
+        这个量级上，过滤慢一点无所谓。
+
+        ⚠️ `points_selector` 只接受模型对象，传 dict 会抛
+        `ValueError: Unsupported points selector type`。这与同一个 client 的
+        `query_points(query_filter=...)` 不同 —— 那个接受 dict（现有 query 方法
+        就是这么写的且能用）。两处形态不一致是 SDK 的既有行为，不是这里的疏漏。
+        """
+        if self._client is None:
+            await self._ensure_client()
+        if self._client is None:  # 降级
+            await self._fallback.delete(entry_id)
+            return
+
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        self._client.delete(
+            collection_name=self._collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="entry_id", match=MatchValue(value=entry_id))]
+            ),
+        )
 
     async def _ensure_client(self) -> None:
         try:

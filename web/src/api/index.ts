@@ -13,6 +13,7 @@ import type {
   Channel,
   Interaction,
   Memory,
+  MemoryType,
   Policy,
   Tag,
   Task,
@@ -42,8 +43,17 @@ export const memoryApi = {
   list: (channelId: string, signal?: AbortSignal) =>
     request<Memory[]>(`/channels/${channelId}/memories`, { signal }),
 
-  create: (channelId: string, body: { content: string; user_id?: string }) =>
+  create: (channelId: string, body: { content: string; type?: MemoryType; user_id?: string }) =>
     request<Memory>(`/channels/${channelId}/memories`, { method: 'POST', body }),
+
+  /**
+   * 改内容与/或类型。原地改，保留 id 与 created_at。
+   *
+   * 后端有意不支持改 visibility —— 把 private 改成 channel 属权限变更而非内容
+   * 编辑。改内容会触发向量重算。
+   */
+  update: (entryId: string, body: { content?: string; type?: MemoryType; actor?: string }) =>
+    request<Memory>(`/memories/${entryId}`, { method: 'PATCH', body }),
 
   /** 删除按条目 id，不带频道 —— 后端路由就是 /memories/{entry_id}。 */
   remove: (entryId: string, actor?: string) =>

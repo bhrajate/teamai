@@ -173,6 +173,60 @@ IM 消息
 - `test_config.py::test_不含凭据字段` 拦下了写进 `config.example.yaml` 的 `embedding.base_url`。连接串属凭据侧，应与 `LLM_BASE_URL` 一致走 `.env`，故从 yaml 移除、在 `.env.example` 里说明。
 - `test_repository_commit.py::test_只读方法不提交` 把 `purge_before` 误判成只读方法。根因是它的 `_mutates` 只认 `session.add/merge/delete`，识别不出 `session.execute(delete(...))` 这类批量 DML。补了 `_builds_dml`：扫函数体里是否构造了 `delete()` / `update()` / `insert()`，而非只看 `execute()` 的内联实参 —— 语句通常先赋给变量再执行，只匹配内联会漏掉最常见的写法。
 
+## 6.5 记忆的删除与编辑
+
+上面的三层架构落地后，记忆的写入路径变了（蒸馏产出为主），但读写生命周期上还缺两块，且暴露出三个此前被掩盖的缺陷。
+
+### 缺陷一：删除不清向量索引
+
+`MemoryService.delete()` 只删 Postgres 行，而 `VectorStore` 协议压根没有 delete。已删记忆的向量留在库里继续被检索命中，随后因取不到实体被过滤掉 —— 不泄露已删内容，但白占 top_k 名额，删得多了检索质量静默下降。
+
+修法是给协议加 `delete(entry_id)`，Qdrant 侧**按 payload 里的 `entry_id` 过滤删除**，而不是按 `uuid5(entry_id)` 反推 point id。两种都可行，选过滤是因为它不依赖 id 推导：按 point id 删要求删除侧与 upsert 侧的推导逐字一致，哪天改了映射方案却漏改一边，删除会静默变成 no-op —— 恰好是本条要修的那类缺陷。删向量失败只告警不抛：Postgres 行是权威源，它已经删了，为向量库故障而报错会让用户以为没删掉。
+
+### 缺陷二：`upsert` 传 dict，向量写入从未成功过
+
+qdrant-client 的 `upload_points` 会直接取 `record.id`，传 dict 会抛 `AttributeError: 'dict' object has no attribute 'id'`。而调用方 `_embed_if_available` 把异常吞成一条 warning —— 于是**向量写入从未成功过，且不报错**。
+
+这个缺陷此前被「embedder 从未注入、这段代码根本没被执行」掩盖着。改为 `PointStruct` 后已对真 Qdrant 验证：写入、检索、删除全通，且 `_client is not None` 证明走的是真服务而非静默降级到内存兜底（后者会让验证假通过）。
+
+顺带记一个 SDK 的不一致：`delete` 的 `points_selector` **只接受模型对象**（传 dict 抛 `ValueError: Unsupported points selector type`），而同一个 client 的 `query_points(query_filter=...)` **接受 dict**。两者形态不同不是本项目的疏漏，代码里已注明。
+
+### 缺陷三：`embedding_ref` 从未被赋值
+
+`MemoryEntry` 声明了它、mapper 两侧都在传，但没有任何代码写入 —— `upsert` 成功后不回填。于是 `scripts/cleanup_chat_memories.py` 里 `embedding_ref IS NULL` 恒为真，那条注释声称的「有向量引用的是经过正规写入路径的」是不存在的机制。
+
+修法是让 `upsert` 返回可回填的引用（而不是让用例层自己推导 point id —— 映射规则是基础设施层的实现细节），`_embed_if_available` 回填后 `update` 落库。回填之后「哪些记忆已建索引」才真的可查，控制台也据此加了一列「索引」。
+
+### 新增能力：编辑
+
+`MemoryRepository.update()` + `MemoryService.edit()` + `PATCH /api/memories/{entry_id}`，可改 `content` 与 `type`。
+
+与「删一条 + 建一条」的区别不只是省一次调用：那样做 id 会变、`created_at` 被重置，审计里也看不出是同一条的演进。
+
+**改内容必须重算向量**，且重算失败时要**删掉旧向量而不是留着** —— 留着比没有索引更糟：检索会持续按已被改掉的内容命中它。这个失败模式只在编辑路径上存在，删除路径没有，是本次最容易漏的一点。
+
+有意**不支持改 `visibility`**：把 `private` 改成 `channel` 等于把本不该进频道记忆的内容放出去，属权限变更而非内容编辑，应走独立的授权路径。
+
+`type` 的非法值立即 400 而不是静默按背景知识收下 —— 那是蒸馏解析（`_parse_entries`）的宽容策略，理由是模型输出不可控、丢内容比分错类更糟；而这边是人在调接口，静默改成别的类型只会让人以为自己设对了。
+
+### 新增字段：`source`
+
+`MemorySource` 枚举 `DISTILLED` / `MANUAL` / `EDITED`。
+
+为什么不用已有的 `source_user_id` 表达：那一列答的是「哪个用户的话变成了这条」，而蒸馏产出与管理台人工写入的 `source_user_id` **都是 NULL** —— 控制台里两者显示成同一个「系统」，完全不可区分。而这张表的内容直接影响机器人的回答，「这句话是谁写的」是出问题时第一个要问的，只靠审计流水回溯太绕。
+
+`EDITED` 不并入 `MANUAL`：区分「人写的」与「模型写了人改的」，后者的原始判断仍来自模型，排查时含义不同。迁移把已有行回填为 `DISTILLED` 而非 `MANUAL` —— 改造前 router 把每条非 @ 消息直接塞进这张表，那些行确实都是系统自动写入的，回填成 MANUAL 会把「系统攒的聊天碎片」错标成「人工录入的知识」，恰好反了。
+
+### 连带修复：`auditaction` 枚举漏迁移（已进主干的缺陷）
+
+上一轮改造给 `AuditAction` 加 `MEMORY_DISTILL` 时只改了 Python 枚举，**没有迁移 Postgres 的 `auditaction` 类型**。于是记忆蒸馏在任何已存在的库上都是失败的 —— 写审计时 asyncpg 抛 `InvalidTextRepresentationError`，异常冒泡到 `MemoryDistiller` 的按频道兜底，整个频道被记成蒸馏失败。
+
+为什么此前全部测试都没抓到：application 层用内存替身，根本不碰数据库；仓储层的真 SQL 测试跑在 SQLite 上，那里 `sa.Enum` 落成 VARCHAR + CHECK 且 CHECK 按当前 Python 定义生成，插什么都过；而 `init_db()` 的 `create_all` 在新库上按当前定义建出完整枚举，所以本地开发与 CI 的新库全都正常 —— **只有升级过的库会炸**。这是一次对真 Postgres 打请求才暴露出来的缺陷。
+
+除补迁移外，新增 `tests/unit/test_enum_migrations.py` 静态兜住这一类：遍历 ORM metadata 里所有落库的枚举列，要求每个取值都在某个迁移文件里出现过。这条守卫本身也验证过 —— 临时给 `AuditAction` 加一个未迁移的值，它确实变红。
+
+该迁移单向不可回退：Postgres 没有 `ALTER TYPE ... DROP VALUE`，真要移除得重建类型并处理已写入的审计行（删掉？改成别的动作？两者都是篡改审计），代价与收益不成比例。
+
 ## 7. 落地状态
 
 已完成并验证：
@@ -184,6 +238,9 @@ IM 消息
 | Admin 交互记录端点 | 起真 web 进程，写入一条后经 API 读回，全部字段（含 `context_refs` 与分拆 token）往返正确 |
 | Redis 滚动窗口 | 对真 Redis 验证 append / due_channels / drain 语义与内存实现一致，ZSET 的 NX 首写时间不被后续消息刷新，drain 后 list 与 index 均无残留 |
 | 清理脚本 | 对真 Postgres 造数据跑 dry-run 与 `--apply`，确认只删碎片、保留真实知识 |
+| 记忆删除/编辑（§6.5） | 对真 Qdrant 验 upsert→query→delete 全通且未静默降级；对真 Postgres 打 POST/PATCH，验字段往返、404/400 边界、审计区分 `content_changed` |
+| `source` 与 `auditaction` 两条迁移 | 各自 upgrade→downgrade→upgrade 往返（`source` 验回填为 DISTILLED；`auditaction` 单向，已注明理由） |
+| 控制台 | `npx tsc --noEmit` 干净、`npm run build` 通过、`npm run smoke` 12 个页面全渲染 |
 
 未做，且都是独立决策：
 

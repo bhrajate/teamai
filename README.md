@@ -136,7 +136,7 @@ worker 里两个定时任务都不可缺：预算周期重置（否则耗尽配�
 | `GET /api/health` | 健康检查 |
 | `GET /api/channels`、`GET/PATCH /api/channels/{id}` | 频道实例：列举、详情、改频道级开关 |
 | `GET /api/tools` | 已注册的工具名，供策略编辑器出选项 |
-| `GET/POST /api/channels/{id}/memories`、`DELETE /api/memories/{entry_id}` | 频道记忆 |
+| `GET/POST /api/channels/{id}/memories`、`PATCH/DELETE /api/memories/{entry_id}` | 频道记忆：列举、手工写入、改内容或类型、删除。改内容会重算向量索引；有意不支持改可见性（`private`→`channel` 属权限变更而非内容编辑） |
 | `GET/PUT /api/channels/{id}/budget` | token 预算 |
 | `GET/PUT /api/channels/{id}/policy` | 权限策略 |
 | `GET /api/channels/{id}/tasks` | 任务查询 |
@@ -171,14 +171,14 @@ make web-check      # 类型检查 + 各页面渲染冒烟
 
 ### 页面
 
-顶栏切频道，侧栏走资源页。信息架构直接照 API 长 —— 十五条路径里有九条挂在 `/channels/{channel_instance_id}` 下（其余六条是 `/health`、`/channels`、`/tools`，以及按条目 id 取用的删记忆、单条交互记录、按任务查交互记录），所以先选频道，再选看什么。
+顶栏切频道，侧栏走资源页。信息架构直接照 API 长 —— 十五条路径里有九条挂在 `/channels/{channel_instance_id}` 下（其余六条是 `/health`、`/channels`、`/tools`，以及按条目 id 取用的改/删记忆、单条交互记录、按任务查交互记录），所以先选频道，再选看什么。
 
 | 页面 | 能做什么 |
 |---|---|
 | 频道实例 | 列出全部实例。实例由平台事件自动创建，此处只读 |
 | 概览 | 身份、行为开关（主动介入 / 跨频道学习）、任务与预算摘要 |
 | 任务 | 任务列表。只读 —— 状态机有合法迁移表，绕过它改会改出非法态 |
-| 记忆 | 增删频道记忆。错的记忆要能删，重要背景要能手工补 |
+| 记忆 | 增、改、删频道记忆。错的记忆要能改或删，重要背景要能手工补。列出「产生方式」（自动蒸馏/人工写入/蒸馏后修改）与是否已建向量索引 |
 | 预算 | 看用量、改上限与周期 |
 | 权限策略 | 工具白名单（选项来自 `GET /api/tools`）、主动介入规则 |
 | 标签 | 标签模板的增删与启停 |

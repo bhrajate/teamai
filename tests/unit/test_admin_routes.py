@@ -28,6 +28,9 @@ EXPECTED_ROUTES = {
     ("GET", "/api/channels/{channel_instance_id}/memories"),
     ("GET", "/api/channels/{channel_instance_id}/policy"),
     ("GET", "/api/channels/{channel_instance_id}/tags"),
+    # 记忆的编辑走 PATCH（原地改，保留 id 与 created_at）。有意不支持改
+    # visibility —— 那属权限变更而非内容编辑。
+    ("PATCH", "/api/memories/{entry_id}"),
     ("GET", "/api/channels/{channel_instance_id}/tasks"),
     # 交互记录只读：由 AgentRuntime 执行时产生，人工写入会污染审计与成本统计；
     # 删除走 worker 的保留期巡检，不给手动入口。

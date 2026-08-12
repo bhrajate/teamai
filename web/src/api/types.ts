@@ -21,6 +21,18 @@ export type TaskStatus =
 /** domain/models/memory.py MemoryType */
 export type MemoryType = 'BACKGROUND_KNOWLEDGE' | 'PREFERENCE' | 'DECISION' | 'FACT'
 
+/**
+ * domain/models/memory.py MemorySource —— 记忆的产生方式。
+ *
+ * 与 `source_user_id` 是两件事：那个答「哪个用户的话变成了这条」，本字段答
+ * 「这条是谁写下的」。蒸馏产出与管理台人工写入的 source_user_id 都是 null，
+ * 只有这个字段能区分它们。
+ */
+export type MemorySource = 'DISTILLED' | 'MANUAL' | 'EDITED'
+
+/** domain/models/memory.py Visibility */
+export type Visibility = 'channel' | 'private'
+
 /** domain/models/budget.py */
 export type BudgetScope = 'ORGANIZATION' | 'CHANNEL'
 export type BudgetPeriod = 'DAILY' | 'WEEKLY' | 'MONTHLY'
@@ -34,6 +46,10 @@ export type AuditAction =
   | 'tool_denied'
   | 'memory_store'
   | 'memory_delete'
+  // 系统从对话窗口蒸馏出记忆。与 memory_store 分开：后者是人显式写入。
+  | 'memory_distill'
+  // 人工修改已有记忆（原地改，保留 id 与 created_at）
+  | 'memory_edit'
   | 'policy_change'
   | 'budget_change'
   | 'ambient_trigger'
@@ -68,7 +84,13 @@ export type Memory = {
   channel_instance_id: string
   content: string
   type: MemoryType
+  /** 哪个用户的话变成了这条。蒸馏与管理台写入都是 null，故区分来源要看 source。 */
   source_user_id: string | null
+  /** 这条是谁写下的 */
+  source: MemorySource
+  visibility: Visibility
+  /** 有值即已建向量索引。null 表示这条不参与语义检索，只走时间倒序回落。 */
+  embedding_ref: string | null
   created_at: string
 }
 

@@ -15,7 +15,13 @@ from teamai.domain.models.budget import (
 )
 from teamai.domain.models.channel import ChannelInstance
 from teamai.domain.models.interaction import AgentInteraction, InteractionResult
-from teamai.domain.models.memory import MemoryEntry, MemoryType, Preference, Visibility
+from teamai.domain.models.memory import (
+    MemoryEntry,
+    MemorySource,
+    MemoryType,
+    Preference,
+    Visibility,
+)
 from teamai.domain.models.policy import AmbientRule, PermissionPolicy
 from teamai.domain.models.tag import TagTemplate
 from teamai.domain.models.task import InvalidTransition, Task, TaskStatus
@@ -34,6 +40,7 @@ __all__ = [
     "InteractionResult",
     "InvalidTransition",
     "MemoryEntry",
+    "MemorySource",
     "MemoryType",
     "PermissionPolicy",
     "Preference",
