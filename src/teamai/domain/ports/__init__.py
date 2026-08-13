@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from teamai.domain.ports.conversation import (
     MessageWindow,
+    ThreadHistorySink,
     ThreadLocator,
     ThreadMessage,
     ThreadReader,
@@ -30,6 +31,7 @@ __all__ = [
     "QueuePayload",
     "ReplyTarget",
     "TaskQueue",
+    "ThreadHistorySink",
     "ThreadLocator",
     "ThreadMessage",
     "ThreadReader",

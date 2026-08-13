@@ -174,8 +174,14 @@ def build_container() -> Container:
         readers.register("feishu", FeishuThreadReader())
     # 缓存统一套在注册表外层，各平台实现里不必各自处理 —— 否则每加一个平台
     # 就要重复一遍缓存逻辑，且容易出现某个平台忘了加。
+    # 缓存容量与单次拉取上限取同一个值：缓存按容量存、读取时按 limit 切尾，
+    # 一份缓存服务全部不超过容量的请求。故这里必须与 ConversationService 的
+    # default_limit 一致，否则每次读都因「要得比缓存容量多」而绕过缓存。
     thread_reader = CachedThreadReader(
-        readers, redis, ttl_seconds=settings.conversation_cache_ttl_seconds
+        readers,
+        redis,
+        ttl_seconds=settings.conversation_cache_ttl_seconds,
+        cache_limit=settings.conversation_history_limit,
     )
 
     # embedder 必须真的装上：改造前这里只传了 vector_store，MemoryService 里
@@ -196,8 +202,13 @@ def build_container() -> Container:
     interactions = InteractionService(
         interaction_repo, retention_days=settings.interactions_retention_days
     )
+    # reader 与 sink 传的是同一个对象（CachedThreadReader 两个端口都实现），但分成
+    # 两个形参：无 Redis 的部署里 sink 无处可写，那时只传 reader 即可退回「每次读
+    # 都打平台」，不必让服务去猜这个对象能不能写。
     conversation = ConversationService(
-        thread_reader, default_limit=settings.conversation_history_limit
+        thread_reader,
+        default_limit=settings.conversation_history_limit,
+        sink=thread_reader,
     )
     distiller = MemoryDistiller(
         window,

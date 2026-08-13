@@ -130,9 +130,10 @@ class Settings(BaseSettings):
     # conversation.*（线程历史按需向平台拉取，不自建镜像表）
     # 单次拉取的条数上限。再多也会被 context_max_messages 压缩掉。
     conversation_history_limit: int = 30
-    # 线程历史的缓存时长。取秒级：历史要求「秒级新鲜」，缓存久了会把刚发的
-    # 消息漏在上下文外；但完全不缓存会让同一线程里连续几条消息各打一次
-    # 平台 API，很快撞上速率限制。
+    # 线程历史的缓存时长。缓存能自更新（每条经手的消息都 append 进去，见
+    # ThreadHistorySink），故这个值不决定历史的新鲜度，只决定「多久由平台数据
+    # 整体校准一次」—— 追加过程中丢的、重的、乱序的，都在下个窗口被抹平。
+    # 调大省配额、调小校准更勤，两头都不会让机器人看不见刚发的消息。
     conversation_cache_ttl_seconds: int = 45
 
     # memory.*（记忆蒸馏：对话窗口 → 结论，原文不入库）

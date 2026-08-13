@@ -151,6 +151,15 @@
    - 前端：`memoryApi.update`、编辑按钮（Modal 改双模式）、「产生方式」与「索引」两列、现有「来源」列改名「来源用户」；补 `memory_distill` / `memory_edit` 两个漏掉的审计动作映射（`satisfies Record<AuditAction, Meta>` 让这个漏项直接编译报错）
    - 新增测试 50 条：`test_memory.py` 扩至 31、`test_memory_repository.py`（10，打真 SQL，含「换 id 会变成 INSERT」这个坑本身）、`test_vector.py`（10，用假 client 断言传给 SDK 的参数形态）、`test_enum_migrations.py`（12）
 
+- [x] 19. 线程历史缓存改为自更新（设计见 `docs/Design-conversation-context.md` §3.1）
+   - 修「TTL 窗口内看不见新消息」：原实现把「线程最近 N 条」当快照整体缓存、只靠 TTL 过期重建，于是同一线程 45 秒内的第二轮对话拿到的是旧快照 —— 机器人看不见自己上一轮的回复，「第二个方案细化下」无从理解。而只有被 @ 的消息才拉历史，所以缓存省下的调用只发生在多轮对话时，省配额的动机与最需要新鲜数据的时刻完全重合
+   - 新增 `ThreadHistorySink` 端口，`CachedThreadReader` 同时实现读写两端：每条经手的消息 append 进缓存。数据结构从单个 JSON 串改为每线程一个 LIST，追加才能是一次 `RPUSHX`，不必读出整表改完写回（web 与 worker 并发追加会互相覆盖）
+   - 三个关键语义：`RPUSHX` 而非 `RPUSH`（键不存在时不建键，否则一条追加就造出「只有一条消息的假历史」并把真实历史挡住）；追加不 EXPIRE（TTL 从「保证新鲜」变成「兜底纠错」，追加中丢的重的乱序的都在下个窗口被平台数据抹平）；键里去掉 limit（否则同一线程有多份缓存，`note()` 无从知道该往哪几个键追加），改为按 `cache_limit` 存、读取时切尾，超容量的请求绕过缓存
+   - 回填调用点收在 router 两处：入向在 `route()` 分支之前（非 @ 消息同样在线程里，漏掉会让缓存与平台不一致），出向在新增的 `_respond()`（同步链路与 worker 链路回帖文案的唯一汇聚点）。判据是「这条文案会不会发到平台」—— 含「任务已受理」与失败文案，不含 `_observe` 的返回值（两平台都不发送）
+   - 两个有意接受的不完美：回填的是「即将发送」而非「已发送」（发送失败则缓存多一条，下个窗口消失；要真实结果就得散到三处调用点，漏一处即静默不一致）；私密会话仍回填线程缓存（PRD §4.2 管的是「不进记忆」即跨会话留存，不是「不看当前对话」）
+   - 新增测试 22 条：`test_conversation.py` 扩至 27（含容量切尾、绕过缓存、无缓存不建键、追加不续期），router 补 5 条回填契约
+   - 真依赖验证：`scripts/verify_thread_cache.py` 对真 Redis 核对七组语义，重点是替身测不出的两条 —— RPUSHX 不建键、RPUSHX/LTRIM 不重置 TTL（实测 44s→44s 仍在原窗口倒数）
+
 - [ ]* 17.1 补 `error_spike` ambient 规则（现在有数据源了，但需给滚动窗口加只读不清空的取数方法 —— 它要的是按关键词聚合计数，不是蒸馏成记忆）
 - [ ]* 17.2 上下文摘要化（`compact()` 目前是「丢弃最旧 + 说明丢了几条」，真摘要要多一次 LLM 调用；配置项与形参已预留）
 - [ ]* 17.3 实测 Slack `conversations.replies` 的速率配额，据此定 `conversation_cache_ttl_seconds` 终值

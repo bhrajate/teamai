@@ -66,7 +66,7 @@ PRD §4.2 写明「私密频道与私信内容默认不进入记忆」，`Visibi
 
 | 需求 | 真实所需 | 介质 | 保留期 |
 |---|---|---|---|
-| Agent 的线程上下文 | 当前线程最近 N 条，秒级新鲜 | 平台 API + Redis 缓存 | 秒级 |
+| Agent 的线程上下文 | 当前线程最近 N 条，秒级新鲜 | 平台 API + Redis 自更新缓存 | 秒级 |
 | 记忆蒸馏的输入 | 原文只是中间态，产物是结论 | Redis 滚动窗口 | 分钟级 |
 | Ambient 规则（error_spike 等） | 滚动窗口聚合 | 同上（复用窗口） | 分钟级 |
 | 审计 / 成本 / 复现 / 评测语料 | 机器人自己的输入输出与提示词来源 | **Postgres** | 可配，默认 90 天 |
@@ -77,12 +77,36 @@ PRD §4.2 写明「私密频道与私信内容默认不进入记忆」，`Visibi
 
 `ConversationService` 在 `router._run_agent()` 里填 `ContextBundle.thread_history`，已有的 `compact()` 直接复用。拉取失败一律降级为空列表：没有上下文的回答仍然可用，为拉不到历史而让整个任务失败是不划算的。
 
+**缓存必须能自更新，只读缓存在这里是错的。** 线程历史不是不可变对象 —— 每来一条消息它就变了。最初的实现把「线程最近 N 条」当快照整体缓存、只靠 TTL 过期重建，于是 TTL 窗口内的第二次读取拿到的是过期快照：
+
+```
+t=0   用户 @ 机器人「列几个方案」   → 打 API，写快照 A（此时还没有机器人的回复）
+t=3   机器人回复，列了三个方案      → 平台上有了，缓存里没有
+t=15  用户 @ 机器人「第二个细化下」 → 命中快照 A，机器人不知道「第二个」指什么
+```
+
+45 秒恰好落在最坏区间：人类追问的间隔通常是 10 到 30 秒，几乎必然命中。丢的是两样东西 —— 机器人上一轮自己的回复（`is_bot` 字段的全部意义就在于让模型区分它），以及其间别人插的话。更根本的是，**只有被 @ 的消息才会拉历史**（非 @ 消息走 observe 进滚动窗口，不碰 reader），所以缓存想省的调用只发生在连续 @ 机器人时 —— 那正是多轮对话。省配额的动机与最需要新鲜数据的时刻完全重合。
+
+故 `CachedThreadReader` 同时实现 `ThreadHistorySink`：每条经手的消息 append 进缓存，缓存自己保持新鲜。四个设计取舍：
+
+**数据结构从单个 JSON 串改为每线程一个 LIST。** 追加一条才能是一次 `RPUSHX`，不必读出整表、改完再写回 —— 后者在 web 与 worker 两个进程并发追加时会互相覆盖。
+
+**用 `RPUSHX` 而非 `RPUSH`：键不存在时不建键。** 否则一条追加就凭空造出一段「只有一条消息的线程历史」，下次读取命中它、把真实历史整个挡住 —— 比缓存陈旧严重得多。键不存在意味着下次读取本就会穿透到平台拿全量，那才是正确的补法。
+
+**追加不 EXPIRE。** Redis 的 TTL 是键的属性，`RPUSHX` / `LTRIM` 这类改值命令不重置它（只有 `SET` 那样的整键覆盖会）。这正是想要的：TTL 的作用从「保证新鲜」变成「兜底纠错」—— 追加过程中丢的、重的、乱序的，都在下个窗口被平台的权威数据抹平，不会永久驻留。
+
+**键里不再含 limit。** 原先含它是为了防「要 30 条的调用拿到只有 10 条的缓存」，但那样同一线程会有多份互不相干的缓存，`note()` 无从知道该往哪几个键追加（SCAN 一遍键空间太贵）。改为缓存固定按 `cache_limit`（取 `conversation_history_limit`）存、读取时切出末尾 `limit` 条，一份缓存服务所有不超过容量的请求；`limit > cache_limit` 的请求绕过缓存直取平台，不拿短缓存充数。
+
+回填的调用点收在两处，都在 router：入向消息在 `route()` 分支之前记（非 @ 消息同样在线程里，平台拉取会返回它们，只记 @ 消息会让缓存与平台不一致）；出向回复在 `_respond()` 里记，它是同步链路与 worker 链路回帖文案的唯一汇聚点。判据是「这条文案会不会发到平台」—— 会发的都记（含「任务已受理」与失败文案），`_observe` 的返回文案不记（Slack 丢弃返回值、飞书只在 `is_mention` 时回复，那些字根本没发出去）。
+
+两个已知的不完美，都是有意接受的：回填的是「即将发送」而非「已发送」，发送失败时缓存会多一条平台上不存在的消息（下个 TTL 窗口消失）—— 要拿真实发送结果就得把回填挪到三处调用点，漏一处就是静默不一致。以及私密会话仍然回填线程缓存：PRD §4.2 管的是「不进记忆」（跨会话留存），不是「不看当前对话」，单聊里机器人本就看得见这些话，而缓存是平台数据的秒级镜像、45 秒后即消失。
+
 平台差异消化在各自实现里：
 
 - **Slack**：`conversations_replies(channel, ts=thread_ref, limit)`，语义直接对应。
 - **飞书**：没有「按 root message_id 拉整串」的接口。`im/v1/messages` 的 `container_id_type` 只接受 `chat` 与 `thread`，而 `thread` 要的是话题群的 `omt_` 前缀 thread_id，与我们持有的 root message_id（`om_` 前缀）不是一回事。故取 `container_id_type="chat"` 拉该会话最近一批消息，再按 `root_id == thread_ref or message_id == thread_ref` 在客户端过滤。代价是多拉一些消息后丢掉，换来的是不依赖话题群这个前提。
 
-需要提前验证的风险：Slack 近年收紧了非 Marketplace 应用对 `conversations.history` 系接口的速率限制，具体配额取决于应用类型与上架状态。上线前用真实凭据压一轮，若配额确实紧，就把缓存 TTL 拉长到线程级、只在被 @ 时拉一次，而不是转向全量镜像。
+需要提前验证的风险：Slack 近年收紧了非 Marketplace 应用对 `conversations.history` 系接口的速率限制，具体配额取决于应用类型与上架状态。上线前用真实凭据压一轮。若配额确实紧，现在可以放心拉长 TTL —— 自更新之后 TTL 只影响「多久由平台数据校准一次」，不再影响历史的新鲜度，这正是加回填换来的余地。转向全量镜像仍然不是选项（理由见 §2）。
 
 ### 3.2 第二层：机器人自己的交互记录 —— 这才是该建的表
 
@@ -144,15 +168,20 @@ router 的 observe 分支不再逐条落库，改为把消息 append 进 Redis �
 ```
 IM 消息
   │
+  ├─ 无论是否 @：note_inbound ──→ 线程缓存（RPUSHX，无缓存则跳过）
+  │
   ├─ 非 @ ──→ [私聊?] ─是→ 丢弃（PRD §4.2）
   │            └─否→ Redis 滚动窗口 ──(worker 定时)──→ LLM 蒸馏 ──→ memory_entries + Qdrant
   │
   └─ @ ────→ router
-              ├─ ThreadReader（平台 API + Redis 45s 缓存）──→ thread_history
+              ├─ ThreadReader（平台 API + Redis 45s 自更新缓存）──→ thread_history
               ├─ MemoryService.query_for_context（Qdrant 向量检索）──→ memory_hits
               ├─ ContextBundle → compact() → AgentRuntime → LLM
-              └─ 落 agent_interactions（提示词 + 响应 + model_id + in/out tokens + context_refs）
+              ├─ 落 agent_interactions（提示词 + 响应 + model_id + in/out tokens + context_refs）
+              └─ _respond：note_outbound ──→ 线程缓存 ──→ 回帖（同步 say / worker publisher）
 ```
+
+两个方向的回填让缓存在 TTL 窗口内始终等于「平台此刻会返回的内容」，TTL 到点时再由平台数据整体校准一次。
 
 ## 5. 迁移与清理
 
@@ -233,10 +262,11 @@ qdrant-client 的 `upload_points` 会直接取 `record.id`，传 dict 会抛 `At
 
 | 项 | 验证方式 |
 |---|---|
-| 三层架构全部代码 | 552 个单测通过，`make lint` 干净 |
+| 三层架构全部代码 | 622 个单测通过，`make lint` 干净 |
 | `agent_interactions` 迁移 | 对真 Postgres 跑 upgrade → downgrade → upgrade，表结构与四个索引核对无误，枚举类型无残留 |
 | Admin 交互记录端点 | 起真 web 进程，写入一条后经 API 读回，全部字段（含 `context_refs` 与分拆 token）往返正确 |
 | Redis 滚动窗口 | 对真 Redis 验证 append / due_channels / drain 语义与内存实现一致，ZSET 的 NX 首写时间不被后续消息刷新，drain 后 list 与 index 均无残留 |
+| 线程缓存自更新 | `scripts/verify_thread_cache.py` 对真 Redis 验证七组语义：RPUSHX 不建键、写快照设 TTL、追加不续期（44s→44s 仍在原窗口倒数）、机器人回复在窗口内可见且全程只打一次平台、LTRIM 按容量截尾、小 limit 从缓存切尾、超容量绕过缓存、TTL 到点后本地追加被平台数据抹平 |
 | 清理脚本 | 对真 Postgres 造数据跑 dry-run 与 `--apply`，确认只删碎片、保留真实知识 |
 | 记忆删除/编辑（§6.5） | 对真 Qdrant 验 upsert→query→delete 全通且未静默降级；对真 Postgres 打 POST/PATCH，验字段往返、404/400 边界、审计区分 `content_changed` |
 | `source` 与 `auditaction` 两条迁移 | 各自 upgrade→downgrade→upgrade 往返（`source` 验回填为 DISTILLED；`auditaction` 单向，已注明理由） |
@@ -247,4 +277,4 @@ qdrant-client 的 `upload_points` 会直接取 `record.id`，传 dict 会抛 `At
 - **上下文摘要化。** `compact()` 现在是「丢弃最旧 + 说明丢了几条」，真正的摘要化需要额外一次 LLM 调用。`context_summary_threshold` 配置项与形参保留着，接上时不必改调用点。
 - **`error_spike` / `deploy_status` 两条 ambient 规则。** 前者现在有数据源了（滚动窗口），但它需要的是「按错误关键词聚合计数」而非「蒸馏成记忆」，得给窗口加一个只读不清空的取数方法；后者仍缺对外 webhook 入口。
 - **`agent_interactions` 分区。** 默认保留期 90 天下单表规模有限，等真实数据量证明需要再按 `created_at` 做 RANGE 分区。
-- **Slack 速率限制的实测。** 见 §3.1，需要真实凭据压一轮才能定 `conversation_cache_ttl_seconds` 的最终取值。
+- **Slack 速率限制的实测。** 见 §3.1，需要真实凭据压一轮才能定 `conversation_cache_ttl_seconds` 的最终取值。缓存自更新之后这个取值不再影响历史新鲜度，只影响多久由平台数据校准一次，调整的余地大了很多。

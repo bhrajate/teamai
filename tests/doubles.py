@@ -76,21 +76,33 @@ class FakeDistiller:
 
 
 class FakeConversation:
-    """按需返回线程历史，并记下每次拉取的目标。
+    """按需返回线程历史，并记下每次拉取与每次回填。
 
     默认返回空列表 —— 那是平台拉取失败时的降级形态，也是「没配 reader」时的
     常态，让默认路径与生产的兜底行为一致。
+
+    `noted` 按 (是否机器人, 锚点, 正文) 记录回填，供 router 测试断言「哪些文案
+    真的进了线程历史缓存」—— 只有会发出去的文案才该进。
     """
 
     def __init__(self, history: list[ThreadMessage] | None = None) -> None:
         self._history = history or []
         self.calls: list[tuple[str, str]] = []  # (channel_id, thread_ref)
+        self.noted: list[tuple[bool, str, str]] = []  # (is_bot, thread_ref, text)
 
     async def thread_history(
         self, instance: ChannelInstance, thread_ref: str, limit: int | None = None
     ) -> list[ThreadMessage]:
         self.calls.append((instance.channel_id, thread_ref))
         return list(self._history)
+
+    async def note_inbound(
+        self, instance: ChannelInstance, thread_ref: str, author_id: str, text: str
+    ) -> None:
+        self.noted.append((False, thread_ref, text))
+
+    async def note_outbound(self, instance: ChannelInstance, thread_ref: str, text: str) -> None:
+        self.noted.append((True, thread_ref, text))
 
 
 class FakeRuntime:

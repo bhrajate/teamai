@@ -231,6 +231,70 @@ async def test_线程历史接进上下文() -> None:
     assert [m.text for m in bundle.thread_history] == ["部署卡在第三步"]
 
 
+# ===== 线程历史缓存的回填 =====
+
+
+async def test_入向消息与机器人回复都回填() -> None:
+    """缓存靠这个保持新鲜：否则 TTL 窗口内的第二轮对话看不见机器人上一句。"""
+    queue = FakeTaskQueue()
+    router, _, _, _, conv = _build_full("chitchat", queue)
+
+    await router.route(mention("帮我看下"))
+
+    assert conv.noted == [
+        (False, "1700000000.1", "帮我看下"),
+        (True, "1700000000.1", "执行完毕"),
+    ]
+
+
+async def test_非mention消息也回填() -> None:
+    """非 @ 消息同样在线程里，平台拉取时会返回它们 —— 只记 @ 消息会让缓存与
+    平台不一致。这与「进不进记忆窗口」是两回事。"""
+    queue = FakeTaskQueue()
+    router, _, _, _, conv = _build_full("chitchat", queue)
+
+    await router.route(mention("随口一句", is_mention=False))
+
+    assert conv.noted == [(False, "1700000000.1", "随口一句")]
+
+
+@pytest.mark.parametrize("channel_type", ["im", "mpim", "p2p"])
+async def test_私密会话仍回填线程缓存(channel_type: str) -> None:
+    """PRD §4.2 管的是「不进记忆」（跨会话留存），不是「不看当前对话」。缓存是
+    平台数据的秒级镜像、45 秒后即消失，单聊里机器人本就看得见这些话。"""
+    queue = FakeTaskQueue()
+    router, _, _, distiller, conv = _build_full("chitchat", queue)
+
+    await router.route(mention("私事", is_mention=False, channel_type=channel_type))
+
+    assert distiller.observed == [], "不该进记忆窗口"
+    assert conv.noted == [(False, "1700000000.1", "私事")], "但该进线程缓存"
+
+
+async def test_受理确认与失败文案都回填() -> None:
+    """判据是「这条文案会不会发到平台」：会发的就该在缓存里，否则机器人看到的
+    历史会随缓存是否命中而不同。"""
+    queue = FakeTaskQueue()
+    router, _, _, _, conv = _build_full("code_review", queue)  # 长任务：只入队 + 回受理
+
+    await router.route(mention("审一下"))
+
+    assert conv.noted[1][0] is True
+    assert "任务已受理" in conv.noted[1][2]
+
+
+async def test_observe文案不回填() -> None:
+    """`_observe` 的返回值两个平台都不发送（Slack 丢弃，飞书只在 is_mention 时回），
+    把它记进缓存会凭空多出平台上不存在的消息。"""
+    queue = FakeTaskQueue()
+    router, _, _, _, conv = _build_full("chitchat", queue)
+
+    decision = await router.route(mention("/deploy prod", is_mention=False))
+
+    assert decision.message == "已忽略"
+    assert conv.noted == [(False, "1700000000.1", "/deploy prod")], "只该有入向那条"
+
+
 async def test_未装配会话服务时照常执行() -> None:
     """线程历史是增益不是依赖：没配 reader（平台凭据不全）时任务照跑。"""
     queue = FakeTaskQueue()

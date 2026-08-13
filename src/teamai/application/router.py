@@ -71,6 +71,12 @@ class MessageRouter:
     async def route(self, msg: IncomingMessage) -> RoutingDecision:
         instance = await self._channels.get_or_create(msg.platform, msg.channel_id, msg.workspace_id)
 
+        # 回填线程历史缓存放在分支之前：非 @ 消息也在线程里，平台拉取时会返回
+        # 它们，只记 @ 消息会让缓存与平台不一致。这与 _observe 的记忆窗口是两件
+        # 不同的事 —— 那个按频道攒待蒸馏的原文，这个按线程维持秒级新鲜的上下文。
+        if self._conversation is not None:
+            await self._conversation.note_inbound(instance, msg.thread_ref, msg.user_id, msg.text)
+
         if not msg.is_mention:
             return await self._observe(instance, msg)
 
@@ -110,7 +116,7 @@ class MessageRouter:
                 tag_name = tag.name
                 text = " ".join(parts[1:]) or tag.instruction
             else:
-                return RoutingDecision(handler="respond", message=f"未找到标签 /{candidate}")
+                return await self._respond(instance, thread_ref, f"未找到标签 /{candidate}")
 
         intent = await self._intent.classify(text)
 
@@ -134,9 +140,14 @@ class MessageRouter:
                 # 状态留在 PENDING，由 worker 取出后推进 RUNNING ——
                 # 在此提前置 RUNNING 会让「排队中」与「执行中」无法区分，
                 # 超时巡检也就没法判断任务是卡在队列还是卡在执行。
-                return RoutingDecision(
-                    handler="respond",
-                    message=f"任务已受理（{intent.kind}），完成后在本线程回复。",
+                #
+                # 受理确认也回填：它确实出现在线程里，平台拉取时会返回。缓存少了
+                # 它，机器人看到的历史就会随「缓存是否命中」而不同 —— 这种不确定
+                # 性比多一行「任务已受理」更难排查。
+                return await self._respond(
+                    instance,
+                    thread_ref,
+                    f"任务已受理（{intent.kind}），完成后在本线程回复。",
                 )
 
         await self._orchestrator.transition(task, TaskStatus.RUNNING, user_id)
@@ -160,12 +171,33 @@ class MessageRouter:
 
         if result.status is StageStatus.DONE:
             await self._orchestrator.transition(task, TaskStatus.DONE, actor)
-            return RoutingDecision(handler="respond", message=result.output)
+            return await self._respond(instance, task.thread_ref, result.output)
         if result.status is StageStatus.PAUSED:
             await self._orchestrator.transition(task, TaskStatus.PAUSED, actor)
-            return RoutingDecision(handler="respond", message=result.error or "任务因预算暂停")
+            return await self._respond(instance, task.thread_ref, result.error or "任务因预算暂停")
         await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
-        return RoutingDecision(handler="respond", message=f"任务执行失败：{result.error}")
+        return await self._respond(instance, task.thread_ref, f"任务执行失败：{result.error}")
+
+    async def _respond(
+        self,
+        instance: ChannelInstance,
+        thread_ref: str,
+        message: str,
+    ) -> RoutingDecision:
+        """构造回复，并把它回填进线程历史缓存。
+
+        所有真正会发出去的文案都走这里，回填才不会漏 —— 同步链路（适配层 say）
+        与异步链路（worker 经 publisher 回帖）都取本方法返回的 message。
+        `_observe` 的文案不走这里：那些返回值两个平台都不发送。
+
+        回填的是「即将发送」而非「已发送」：发送失败时缓存里会多一条平台上不存在
+        的消息，代价是本 TTL 窗口内多一行上下文，下个窗口由平台数据重建时消失。
+        为拿到真实发送结果就得把回填挪到三处调用点（Slack say / 飞书 publisher /
+        worker publisher），漏一处就是静默不一致，不划算。
+        """
+        if self._conversation is not None and message:
+            await self._conversation.note_outbound(instance, thread_ref, message)
+        return RoutingDecision(handler="respond", message=message)
 
     async def _run_agent(
         self,
