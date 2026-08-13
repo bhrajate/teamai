@@ -175,7 +175,7 @@ async def test_线程历史标出机器人自己的发言(audit_repo: FakeAuditR
 
     history = [
         ThreadMessage(author_id="U9", text="部署失败了"),
-        ThreadMessage(author_id="B1", text="我看下日志", is_bot=True),
+        ThreadMessage(author_id="B1", text="我看下日志", is_self=True),
     ]
     await runtime.run(_task(), _bundle(["github"], history=history))
 

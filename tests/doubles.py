@@ -88,7 +88,7 @@ class FakeConversation:
     def __init__(self, history: list[ThreadMessage] | None = None) -> None:
         self._history = history or []
         self.calls: list[tuple[str, str]] = []  # (channel_id, thread_ref)
-        self.noted: list[tuple[bool, str, str]] = []  # (is_bot, thread_ref, text)
+        self.noted: list[tuple[bool, str, str]] = []  # (is_self, thread_ref, text)
 
     async def thread_history(
         self, instance: ChannelInstance, thread_ref: str, limit: int | None = None

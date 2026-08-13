@@ -33,19 +33,30 @@ class ThreadLocator:
 class ThreadMessage:
     """线程里的一条消息。平台无关，由各平台实现归一。
 
-    `author_id` 为空表示取不到发送者（如平台的系统消息）；`is_bot` 用于让
-    提示词区分「人说的」与「机器人自己说过的」—— 两者混在一起时模型容易把
-    自己的上一轮输出当成用户诉求。
+    `author_id` 为空表示取不到发送者（如平台的系统消息）。
+
+    `is_self` 严格表示「这条是本 bot 自己发的」，不是「某个机器人发的」。这个
+    区分是必需的，因为 `render()` 把它渲染成 `AI:` —— 而团队频道里往往还有 CI
+    通知、告警机器人。把它们的消息标成 `AI:`，模型会以为那些话是自己上一轮说的，
+    于是可能「承认」一个自己没做过的判断、或围绕别的机器人的输出继续往下答。
+
+    字段原名 `is_bot`，语义是「某个机器人」—— 名字本身诚实，但它被当成「我」来
+    渲染，两个平台的实现也就都按字面写成了「有 bot_id / sender_type 是 app」。
+    改名是修复的一部分：留着旧名，下一个人还会照字面再写错一遍。
+
+    别的机器人不单独标记，按普通参与者渲染成 `<bot_id>: ...`。模型本来也不知道
+    任何一个 ID 背后是人还是机器，多一档只在「想让模型知道这是机器输出」时才有
+    价值，那是另一件事。
     """
 
     author_id: str
     text: str
     ts: datetime | None = None
-    is_bot: bool = False
+    is_self: bool = False
 
     def render(self) -> str:
         """渲染成提示词里的一行。"""
-        who = "AI" if self.is_bot else (self.author_id or "unknown")
+        who = "AI" if self.is_self else (self.author_id or "unknown")
         return f"{who}: {self.text}"
 
 

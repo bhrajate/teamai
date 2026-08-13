@@ -160,6 +160,14 @@
    - 新增测试 22 条：`test_conversation.py` 扩至 27（含容量切尾、绕过缓存、无缓存不建键、追加不续期），router 补 5 条回填契约
    - 真依赖验证：`scripts/verify_thread_cache.py` 对真 Redis 核对七组语义，重点是替身测不出的两条 —— RPUSHX 不建键、RPUSHX/LTRIM 不重置 TTL（实测 44s→44s 仍在原窗口倒数）
 
+- [x] 20. 修 `is_self` 错标：别的机器人的消息被当成自己说的（设计见 `docs/Design-conversation-context.md` §3.1）
+   - 缺陷：`ThreadMessage.is_bot` 决定 `render()` 输出 `AI:` 还是 `<author_id>:`，但两个平台的判定写的都是「某个机器人」—— Slack 是 `bool(m.get("bot_id"))`、飞书是 `sender_type == "app"`。团队频道里的 CI 通知、告警机器人因此都被渲染成 `AI:`，模型会以为那些话是自己上一轮说的
+   - 飞书侧尤其隐蔽：`bot_open_id` 形参一直存在，但没有任何调用方传值（container 里是 `FeishuThreadReader()`），恒为空串，于是精确判定的 `and` 分支永远为假，只剩 `sender_type == "app"` 在起作用。注释里写的「宁可少标注，不可错标」实际没做到
+   - 字段 `is_bot` 改名 `is_self`，语义收窄为「本 bot 自己发的」。改名是修复的一部分：名字本身诚实（「某个机器人」），但它被当成「我」来渲染，留着旧名下一个人还会照字面再写错一遍
+   - 身份获取：Slack 比对 `auth.test` 的 `bot_id` 与 `user_id`（`chat.postMessage` 发出的消息通常两个字段都有，只比一个会漏），飞书比对 `/open-apis/bot/v3/info` 的 `open_id`。均首次拉取时取一次并缓存，失败不重试（权限不足是稳定失败）。读取器自己取而非由连接器传入 —— worker 进程不起连接器但同样拉线程历史
+   - 降级方向是「少标」而非「错标」：身份未知时 `is_self` 一律为假，自己的回复退化成普通参与者。错标会把别人的话认领成自己的，那让模型的自我认知出错。别的机器人不单独标记，按普通参与者渲染
+   - 新增 `tests/unit/test_thread_readers.py`（20 条）—— 两个读取器此前完全没有测试，这正是缺陷能活下来的原因。验证过守卫有效：临时改回旧判定，Slack 侧 3 条、飞书侧 2 条立刻变红
+
 - [ ]* 17.1 补 `error_spike` ambient 规则（现在有数据源了，但需给滚动窗口加只读不清空的取数方法 —— 它要的是按关键词聚合计数，不是蒸馏成记忆）
 - [ ]* 17.2 上下文摘要化（`compact()` 目前是「丢弃最旧 + 说明丢了几条」，真摘要要多一次 LLM 调用；配置项与形参已预留）
 - [ ]* 17.3 实测 Slack `conversations.replies` 的速率配额，据此定 `conversation_cache_ttl_seconds` 终值

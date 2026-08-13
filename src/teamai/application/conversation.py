@@ -94,13 +94,14 @@ class ConversationService:
     ) -> None:
         """记下一条机器人发出的回复。
 
-        `is_bot=True` 让下一轮的提示词把它渲染成 "AI:" 而非某个用户 —— 混作
-        一堆无署名文本时模型容易把自己的上一轮输出当成用户诉求。
+        `is_self=True` 在这条路径上是按构造成立的 —— 这条回复就是本进程发出去的，
+        不必像平台拉取那样比对 id。让下一轮的提示词把它渲染成 "AI:" 而非某个用户：
+        混作一堆无署名文本时，模型容易把自己的上一轮输出当成用户诉求。
         """
         await self._note(
             instance,
             thread_ref,
-            ThreadMessage(author_id=instance.agent_identity, text=text, is_bot=True),
+            ThreadMessage(author_id=instance.agent_identity, text=text, is_self=True),
         )
 
     async def _note(

@@ -73,7 +73,10 @@ def _encode(message: ThreadMessage) -> str:
             "a": message.author_id,
             "t": message.text,
             "s": message.ts.isoformat() if message.ts else None,
-            "b": message.is_bot,
+            # 键名沿用 "b"（原 is_bot）：语义收窄成 is_self 后，旧格式的缓存项在
+            # 至多一个 TTL 窗口内会把「别的机器人」解成「自己」—— 45 秒后自然消失，
+            # 不值得为此加一位版本号。
+            "b": message.is_self,
         },
         ensure_ascii=False,
     )
@@ -86,7 +89,7 @@ def _decode(raw: str) -> ThreadMessage:
         author_id=d.get("a", ""),
         text=d.get("t", ""),
         ts=datetime.fromisoformat(ts).astimezone(UTC) if ts else None,
-        is_bot=bool(d.get("b")),
+        is_self=bool(d.get("b")),
     )
 
 

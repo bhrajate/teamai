@@ -109,7 +109,7 @@ async def test_入向消息按用户身份回填() -> None:
 
     (locator, message) = sink.noted[0]
     assert locator == ThreadLocator(platform="slack", channel_id="C1", thread_ref="t1")
-    assert (message.author_id, message.text, message.is_bot) == ("U7", "用户说的话", False)
+    assert (message.author_id, message.text, message.is_self) == ("U7", "用户说的话", False)
 
 
 async def test_出向回复标为机器人() -> None:
@@ -120,7 +120,7 @@ async def test_出向回复标为机器人() -> None:
     await service.note_outbound(INSTANCE, "t1", "机器人的回答")
 
     message = sink.noted[0][1]
-    assert message.is_bot is True
+    assert message.is_self is True
     assert message.author_id == INSTANCE.agent_identity
 
 
@@ -266,7 +266,7 @@ class FakeRedis:
 def test_编解码保真() -> None:
     for original in (
         ThreadMessage(author_id="U1", text="人说的", ts=datetime(2026, 1, 1, tzinfo=UTC)),
-        ThreadMessage(author_id="B1", text="机器人说的", is_bot=True),
+        ThreadMessage(author_id="B1", text="机器人说的", is_self=True),
     ):
         assert _decode(_encode(original)) == original
 
@@ -364,14 +364,14 @@ async def test_机器人自己的回复在TTL窗口内可见() -> None:
     cached = CachedThreadReader(inner, FakeRedis())
 
     await cached.fetch_thread(LOCATOR, 10)  # 第一轮：写入快照
-    await cached.note(LOCATOR, ThreadMessage(author_id="B1", text="方案一二三", is_bot=True))
+    await cached.note(LOCATOR, ThreadMessage(author_id="B1", text="方案一二三", is_self=True))
     await cached.note(LOCATOR, ThreadMessage(author_id="U1", text="第二个细化下"))
 
     second = await cached.fetch_thread(LOCATOR, 10)
 
     assert [m.text for m in second] == ["列几个方案", "方案一二三", "第二个细化下"]
     assert len(inner.calls) == 1, "全程只该打一次平台"
-    assert [m.is_bot for m in second] == [False, True, False]
+    assert [m.is_self for m in second] == [False, True, False]
 
 
 async def test_无缓存时追加不建键() -> None:
@@ -445,7 +445,7 @@ async def test_Redis不可用时追加静默失败() -> None:
 def test_机器人发言标为AI() -> None:
     """混作一堆无署名文本时，模型容易把自己上一轮输出当成用户诉求。"""
     assert ThreadMessage(author_id="U1", text="问题").render() == "U1: 问题"
-    assert ThreadMessage(author_id="B1", text="回答", is_bot=True).render() == "AI: 回答"
+    assert ThreadMessage(author_id="B1", text="回答", is_self=True).render() == "AI: 回答"
 
 
 def test_发送者缺失时标为unknown() -> None:

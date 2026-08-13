@@ -67,11 +67,39 @@ def _extract_text(item) -> str:
 class FeishuThreadReader(ThreadReader):
     def __init__(self, client: lark_oapi.Client | None = None, bot_open_id: str = "") -> None:
         self._client = client or build_lark_client()
-        # 用于判定哪些历史消息是机器人自己发的。取不到时全部按人处理 ——
-        # 宁可少标注，不可错标（把用户的话标成 AI 会让模型忽略真实诉求）。
+        # 判定哪条历史消息是本 bot 自己发的。此前这个参数没有任何调用方传值
+        # （container 里是 FeishuThreadReader()），恒为空串，于是判定只剩
+        # `sender_type == "app"` 那半边 —— 频道里任何应用发的消息都被标成自己的。
+        # 现在改为空值时首次拉取自行取一次，见 _resolve_identity。
         self._bot_open_id = bot_open_id
+        # 区分「还没问过」与「问过且失败」：失败也不再重试，否则每次拉线程都白打
+        # 一次身份接口（凭据不对是稳定失败，重试不会变好）。
+        self._identity_resolved = bool(bot_open_id)
+
+    async def _resolve_identity(self) -> None:
+        """取本 bot 的 open_id，仅首次调用时打一次 /open-apis/bot/v3/info。
+
+        连接器启动时也拉同一份身份（mention 判定要用），但那份在 adapters 层、
+        且 worker 进程根本不起连接器。读取器自己取一次更省事，也让「拉线程历史」
+        这件事不依赖装配顺序。失败不抛：拿不到身份只会让 is_self 全为假。
+        """
+        if self._identity_resolved:
+            return
+        self._identity_resolved = True
+        try:
+            from lark_oapi.channel.bot_identity import fetch_bot_identity
+
+            identity = await fetch_bot_identity(self._client.config)
+            if identity is not None:
+                self._bot_open_id = identity.open_id
+                logger.info(f"飞书 bot open_id: {self._bot_open_id}")
+            else:
+                logger.warning("飞书 bot 身份拉取失败，自己的历史回复将标不出来")
+        except Exception as exc:
+            logger.warning(f"飞书 bot 身份拉取异常，自己的历史回复将标不出来: {exc}")
 
     async def fetch_thread(self, locator: ThreadLocator, limit: int) -> list[ThreadMessage]:
+        await self._resolve_identity()
         page_size = min(max(limit * FETCH_MULTIPLIER, limit), MAX_PAGE_SIZE)
         request = (
             ListMessageRequest.builder()
@@ -103,14 +131,17 @@ class FeishuThreadReader(ThreadReader):
                 continue
             sender = getattr(item, "sender", None)
             sender_id = getattr(sender, "id", "") if sender is not None else ""
-            sender_type = getattr(sender, "sender_type", "") if sender is not None else ""
             out.append(
                 ThreadMessage(
                     author_id=sender_id or "",
                     text=text,
                     ts=_to_datetime(getattr(item, "create_time", None)),
-                    is_bot=sender_type == "app"
-                    or bool(self._bot_open_id and sender_id == self._bot_open_id),
+                    # 只认自己的 open_id。原先还 or 了 `sender_type == "app"`，
+                    # 那是「某个应用发的」—— 群里的 CI 通知、告警机器人全都命中，
+                    # 于是它们的消息被渲染成 AI:，模型会以为是自己上一轮说的。
+                    # 身份未知时一律为假：宁可把自己的回复降级成普通参与者，
+                    # 也不能把别人的话认领成自己的。
+                    is_self=bool(self._bot_open_id) and sender_id == self._bot_open_id,
                 )
             )
         # 拉的是倒序，反转成正序后取最近 limit 条
