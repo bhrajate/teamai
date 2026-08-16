@@ -20,7 +20,6 @@ from teamai.domain.models.memory import (
     MemorySource,
     MemoryType,
     Preference,
-    Visibility,
 )
 from teamai.domain.models.policy import AmbientRule, PermissionPolicy
 from teamai.domain.models.tag import TagTemplate
@@ -47,5 +46,4 @@ __all__ = [
     "Task",
     "TaskStatus",
     "TagTemplate",
-    "Visibility",
 ]

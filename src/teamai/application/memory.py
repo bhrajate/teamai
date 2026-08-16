@@ -17,7 +17,6 @@ from teamai.domain.models import (
     MemorySource,
     MemoryType,
     Preference,
-    Visibility,
 )
 from teamai.domain.ports import Embedder
 from teamai.domain.repositories import ChannelRepository, MemoryRepository
@@ -63,7 +62,6 @@ class MemoryService:
         source_user_id: str | None = None,
         *,
         type: MemoryType = MemoryType.BACKGROUND_KNOWLEDGE,
-        visibility: Visibility = Visibility.CHANNEL,
         source: MemorySource = MemorySource.MANUAL,
         action: AuditAction = AuditAction.MEMORY_STORE,
     ) -> MemoryEntry:
@@ -80,7 +78,6 @@ class MemoryService:
             type=type,
             source_user_id=source_user_id,
             source=source,
-            visibility=visibility,
         )
         await self._repo.store(entry)
         await self._embed_if_available(entry)
@@ -105,8 +102,9 @@ class MemoryService:
         与「删一条 + 建一条」的区别不只是省一次调用：那样做 id 会变、
         `created_at` 被重置，审计里也看不出是同一条的演进。
 
-        `visibility` 不在可改字段里 —— 把 private 改成 channel 等于把本不该进
-        频道记忆的内容放出去，属权限变更而非内容编辑，应走独立的授权路径。
+        与 `supersede()` 的分工：本方法是「这条记忆写错了」（人工修正笔误、
+        补充措辞），改完仍是同一条事实；supersede 是「事实变了」（超时从 3 秒
+        改成 5 秒），旧的那条曾经成立、留着可查。混用会丢失后者的历史。
         """
         entry = await self._repo.get(entry_id)
         if entry is None:
@@ -143,6 +141,91 @@ class MemoryService:
             },
         )
         return entry
+
+    async def supersede(
+        self,
+        old_entry_id: str,
+        channel_instance_id: str,
+        content: str,
+        *,
+        type: MemoryType = MemoryType.BACKGROUND_KNOWLEDGE,
+        source: MemorySource = MemorySource.DISTILLED,
+        action: AuditAction = AuditAction.MEMORY_DISTILL,
+    ) -> MemoryEntry | None:
+        """用新内容取代一条既有记忆：写新条目 + 给旧条目打取代标记。
+
+        返回新条目；旧 id 不存在时返回 None（调用方应降级为纯 store —— 见
+        MemoryDistiller._apply_actions 里的说明）。
+
+        顺序是先写新、再标旧：反过来的话，若写新条目失败，旧条目已被标记为
+        「已取代」而取代它的东西不存在 —— 那条事实会从检索里消失，比留着旧值
+        更糟。两步之间没有事务保护（仓储各自 commit），所以顺序就是唯一的
+        保障手段。
+
+        旧条目**不删**：这正是 superseded_by 存在的意义，见 MemoryEntry 的
+        字段注释。
+        """
+        old = await self._repo.get(old_entry_id)
+        if old is None:
+            return None
+        if old.channel_instance_id != channel_instance_id:
+            # 跨频道取代一律拒绝。模型输出的 id 可能来自别的频道（提示词里给的
+            # 候选虽只有本频道的，但模型会编 id），而放行等于让 A 频道的蒸馏
+            # 结果改写 B 频道的记忆 —— 频道隔离是 Design-claude-tag.md §5 的
+            # 正确性属性之一。
+            logger.warning(
+                f"拒绝跨频道取代：记忆 {old_entry_id} 属 {old.channel_instance_id}，"
+                f"请求方是 {channel_instance_id}"
+            )
+            return None
+
+        new_entry = await self.store(
+            channel_instance_id,
+            content,
+            type=type,
+            source=source,
+            action=action,
+        )
+
+        old.supersede(new_entry.id)
+        await self._repo.update(old)
+        # 旧条目的向量要撤掉：留着它会让检索按已作废的事实命中，而 top_k 名额
+        # 有限。与 edit() 里「重算失败就删旧向量」是同一个判断 —— 一个指向过期
+        # 内容的向量比没有向量更糟。
+        await self._drop_vector(old.id)
+        old.embedding_ref = None
+        await self._repo.update(old)
+
+        await self._audit.record(
+            channel_instance_id,
+            AuditAction.MEMORY_EDIT,
+            detail={
+                "action": "supersede",
+                "old_entry_id": old.id,
+                "new_entry_id": new_entry.id,
+                "old_content": old.content[:50],
+            },
+        )
+        return new_entry
+
+    async def find_similar(
+        self, channel_instance_id: str, content: str, top_k: int
+    ) -> list[MemoryEntry]:
+        """按内容查该频道已有的近似记忆，供蒸馏时判断该 ADD 还是 UPDATE。
+
+        与 `query_for_context` 的区别：那个的输入是用户的提问、结果要喂给模型
+        当上下文，故一并带上全部偏好；这个的输入是刚蒸馏出的一条结论、结果是
+        给模型看的「候选比对项」，不需要偏好。共用底层的向量检索路径。
+
+        向量不可用时回落到时间倒序：宁可让模型比对最近若干条，也不要直接返回
+        空 —— 空候选会让每条蒸馏结果都判成 ADD，去重完全失效。
+        """
+        hits = await self._semantic_hits(channel_instance_id, content, top_k)
+        if not hits:
+            hits = await self._repo.list_by_channel(
+                channel_instance_id, limit=min(top_k, FALLBACK_LIMIT)
+            )
+        return hits[:top_k]
 
     async def set_preference(
         self, channel_instance_id: str, user_id: str, preference: str
@@ -202,11 +285,26 @@ class MemoryService:
             logger.warning(f"向量检索失败，回落到时间倒序: {exc}")
             return []
         entries = [await self._repo.get(eid) for eid in ids]
-        return [e for e in entries if e is not None]
+        # 过滤已被取代的：supersede 时会撤掉旧向量，但那一步失败只告警
+        # （_drop_vector 的取舍），残留向量仍会命中。这里兜一道，避免过期事实
+        # 靠一次失败的向量删除就流回上下文。
+        return [e for e in entries if e is not None and e.is_current]
 
-    async def list(self, channel_instance_id: str, limit: int | None = 200) -> list[MemoryEntry]:
-        """列出记忆，默认有上界（控制台分页用）。"""
-        return await self._repo.list_by_channel(channel_instance_id, limit=limit)
+    async def list(
+        self,
+        channel_instance_id: str,
+        limit: int | None = 200,
+        *,
+        current_only: bool = True,
+    ) -> list[MemoryEntry]:
+        """列出记忆，默认有上界（控制台分页用）。
+
+        `current_only=False` 给控制台排查历史用 —— 「这条事实之前是什么」只有
+        连被取代的一起列出来才看得到。
+        """
+        return await self._repo.list_by_channel(
+            channel_instance_id, limit=limit, current_only=current_only
+        )
 
     async def delete(self, entry_id: str, actor: str | None = None) -> None:
         entry = await self._repo.get(entry_id)

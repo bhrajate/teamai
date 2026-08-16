@@ -18,8 +18,9 @@ def _memory_to_model(e: MemoryEntry) -> MemoryEntryModel:
         type=e.type,
         source_user_id=e.source_user_id,
         source=e.source,
-        visibility=e.visibility,
         embedding_ref=e.embedding_ref,
+        superseded_by=e.superseded_by,
+        superseded_at=e.superseded_at,
         created_at=e.created_at,
     )
 
@@ -32,8 +33,9 @@ def _model_to_memory(m: MemoryEntryModel) -> MemoryEntry:
         type=m.type,
         source_user_id=m.source_user_id,
         source=m.source,
-        visibility=m.visibility,
         embedding_ref=m.embedding_ref,
+        superseded_by=m.superseded_by,
+        superseded_at=m.superseded_at,
         created_at=m.created_at,
     )
 
@@ -68,7 +70,11 @@ class SQLMemoryRepository(MemoryRepository):
         await self._session.commit()
 
     async def list_by_channel(
-        self, channel_instance_id: str, limit: int | None = None
+        self,
+        channel_instance_id: str,
+        limit: int | None = None,
+        *,
+        current_only: bool = True,
     ) -> list[MemoryEntry]:
         """按 created_at 倒序返回，limit 为 None 时全量。
 
@@ -77,11 +83,12 @@ class SQLMemoryRepository(MemoryRepository):
         行序由数据库自行决定，等于随机取样；且随频道使用时长线性变慢，
         因为每次都要把该频道全部记忆读进进程内存。
         """
-        stmt = (
-            select(MemoryEntryModel)
-            .where(MemoryEntryModel.channel_instance_id == channel_instance_id)
-            .order_by(MemoryEntryModel.created_at.desc())
+        stmt = select(MemoryEntryModel).where(
+            MemoryEntryModel.channel_instance_id == channel_instance_id
         )
+        if current_only:
+            stmt = stmt.where(MemoryEntryModel.superseded_by.is_(None))
+        stmt = stmt.order_by(MemoryEntryModel.created_at.desc())
         if limit is not None:
             stmt = stmt.limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()

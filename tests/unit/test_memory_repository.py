@@ -24,7 +24,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from teamai.domain.models import MemoryEntry, MemorySource, MemoryType, Visibility
+from teamai.domain.models import MemoryEntry, MemorySource, MemoryType
 from teamai.infrastructure.db import Base
 from teamai.infrastructure.orm.memory import MemoryEntryModel
 from teamai.infrastructure.repositories.memory import SQLMemoryRepository
@@ -90,7 +90,6 @@ async def test_update保留未改动的字段(repo: SQLMemoryRepository) -> None
         _entry(
             "mem_1",
             source=MemorySource.DISTILLED,
-            visibility=Visibility.PRIVATE,
             source_user_id="ou_abc",
         )
     )
@@ -102,7 +101,6 @@ async def test_update保留未改动的字段(repo: SQLMemoryRepository) -> None
 
     got = await repo.get("mem_1")
     assert got.source is MemorySource.DISTILLED
-    assert got.visibility is Visibility.PRIVATE
     assert got.source_user_id == "ou_abc"
     # 与更新前读到的值比，而不是与 BASE_TS 比：SQLite 不保留 tzinfo（返回 naive
     # datetime），而 Postgres 的 DateTime(timezone=True) 会保留。这里要验的契约

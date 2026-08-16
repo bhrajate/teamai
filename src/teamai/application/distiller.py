@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 
 from teamai.application.agent.prompts import DISTILL_NONE, DISTILL_SYSTEM_PROMPT, build_distill_prompt
 from teamai.application.budget import BudgetController
 from teamai.application.memory import MemoryService
-from teamai.domain.models import AuditAction, MemorySource, MemoryType
+from teamai.domain.models import AuditAction, MemoryEntry, MemorySource, MemoryType
 from teamai.domain.ports import LLMGateway, MessageWindow, TokenBudgetExceeded
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,11 @@ DISTILL_MODEL_LEVEL = "light"
 # 单条记忆的长度上限。蒸馏结果本应是一句话，超长通常意味着模型没在提炼而是
 # 在复述整段对话，截断比丢弃好（仍有信息），但要留痕。
 MAX_ENTRY_LENGTH = 500
+
+# 送给模型比对的已有记忆条数。取 10 与 mem0 的实验配置一致（arXiv:2504.19413
+# §2.1 的 s=10）。比检索用的 top_k=5 大：这些是给模型看的候选比对项，漏掉一条
+# 会让本该 UPDATE 的判成 ADD（多一条重复），而多给几条只是多花些 token。
+CANDIDATE_TOP_K = 10
 
 
 @dataclass
@@ -58,31 +64,107 @@ class DistillReport:
         return sum(self.distilled.values())
 
 
-def _parse_entries(raw: str) -> list[tuple[MemoryType, str]]:
-    """解析模型输出的 `类型|内容` 行。
+class DistillAction(Enum):
+    """蒸馏结果对记忆库的动作。
 
-    宽容解析：类型无法识别时归入 BACKGROUND_KNOWLEDGE 而不是丢弃整行 ——
-    分类错了还能用，内容丢了就没了。整行没有分隔符时同样按背景知识收下。
+    对齐 mem0 的 update 阶段（arXiv:2504.19413 §2.1），但**不给 DELETE**：
+    那篇论文里 DELETE 用于移除「被新信息矛盾掉」的记忆，而本项目用
+    `MemoryEntry.superseded_by` 表达同一件事且可回溯。删除不可逆，而「矛盾」
+    的判断来自模型、可能是错的。真要删走人工路径（Admin API）。
     """
-    out: list[tuple[MemoryType, str]] = []
+
+    ADD = "ADD"
+    UPDATE = "UPDATE"
+    NOOP = "NOOP"
+
+
+@dataclass
+class DistillItem:
+    """模型输出的一条动作。
+
+    `ref` 是模型引用的**候选列表序号**（1-based），不是记忆 id —— 让模型输出
+    ULID 极易出错，映射回真实 id 由 _apply_actions 做。
+    """
+
+    action: DistillAction
+    type: MemoryType
+    ref: int | None
+    content: str
+
+
+def _parse_entries(raw: str) -> list[DistillItem]:
+    """解析模型输出的 `动作|类型|编号|内容` 行。
+
+    宽容解析的原则不变：能救的都救回来，救不回来的丢一行而不是丢整批。
+
+    - 动作无法识别时按 ADD 处理（不是丢弃）：模型漏写动作最可能是想新增，
+      而按 ADD 处理最多多一条重复；判成 UPDATE 会误伤一条正确记忆。
+    - 类型无法识别时归入 BACKGROUND_KNOWLEDGE —— 分类错了还能用。
+    - UPDATE 缺编号时降级为 ADD：没有编号就无从取代。
+    - 兼容旧的三段乃至两段格式（`类型|内容`）：那是加动作维度之前的输出形状，
+      模型偶尔会退回去。缺动作即视为 ADD。
+    """
+    out: list[DistillItem] = []
     for line in raw.splitlines():
         text = line.strip().lstrip("-*•").strip()
         if not text or text.upper() == DISTILL_NONE:
             continue
-        kind, sep, content = text.partition("|")
-        if not sep:
-            kind, content = "", text
+
+        # ⚠️ 只对前三段 strip，内容段保持原样再 join。对每一段都 strip 会破坏
+        # 内容里的 `|` 两侧空格 —— 模型贴命令或表格时（`a | b | c`）会被压成
+        # `a|b|c`。前三段是动作/类型/编号，本就不含有意义的空格。
+        parts = text.split("|")
+        if len(parts) >= 4:
+            raw_action, raw_type, raw_ref = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            content = "|".join(parts[3:])
+        elif len(parts) == 3:
+            parts = [p.strip() for p in parts]
+            # 可能是 `动作|类型|内容`（漏了编号位）或 `类型|编号|内容`
+            if parts[0].upper() in {a.value for a in DistillAction}:
+                raw_action, raw_type, raw_ref, content = parts[0], parts[1], "", parts[2]
+            else:
+                raw_action, raw_type, raw_ref, content = "ADD", parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            raw_action, raw_type, raw_ref, content = "ADD", parts[0], "", parts[1]
+        else:
+            raw_action, raw_type, raw_ref, content = "ADD", "", "", parts[0]
+
         content = content.strip()
-        if not content:
-            continue
+
         try:
-            mem_type = MemoryType[kind.strip().upper()]
+            action = DistillAction(raw_action.strip().upper())
+        except ValueError:
+            action = DistillAction.ADD
+
+        try:
+            mem_type = MemoryType[raw_type.strip().upper()]
         except KeyError:
             mem_type = MemoryType.BACKGROUND_KNOWLEDGE
+
+        ref: int | None = None
+        digits = raw_ref.strip()
+        if digits.isdigit():
+            ref = int(digits)
+
+        if action is DistillAction.NOOP:
+            # NOOP 不需要内容，但需要编号才有意义；两者都缺就是一行噪声
+            if ref is None:
+                continue
+            out.append(DistillItem(action, mem_type, ref, ""))
+            continue
+
+        if not content:
+            continue
+
+        if action is DistillAction.UPDATE and ref is None:
+            logger.warning("蒸馏输出 UPDATE 但缺编号，降级为 ADD")
+            action = DistillAction.ADD
+
         if len(content) > MAX_ENTRY_LENGTH:
             logger.warning(f"蒸馏产出超长（{len(content)} 字），已截断")
             content = content[:MAX_ENTRY_LENGTH]
-        out.append((mem_type, content))
+
+        out.append(DistillItem(action, mem_type, ref, content))
     return out
 
 
@@ -157,9 +239,15 @@ class MemoryDistiller:
         if not lines:
             return 0
 
+        # 先取该频道已有的近似记忆作为比对候选。用整窗文本作查询：这一步问的是
+        # 「这段对话可能涉及哪些已有知识」，而具体哪条对应哪条由模型判断。
+        candidates = await self._memory.find_similar(
+            channel_instance_id, "\n".join(lines), CANDIDATE_TOP_K
+        )
+
         remaining = await self._budget.remaining(channel_instance_id)
         result = await self._gateway.run(
-            build_distill_prompt(lines),
+            build_distill_prompt(lines, [c.content for c in candidates]),
             model_level=DISTILL_MODEL_LEVEL,
             system_prompt=DISTILL_SYSTEM_PROMPT,
             token_limit=remaining,
@@ -167,16 +255,80 @@ class MemoryDistiller:
         # 先记账再写记忆：蒸馏是后台行为，但烧的是该频道的配额。不计入的话
         # 「任意调用序列下 token 不超过配额」这条正确性属性会被后台任务绕过。
         await self._budget.consume(channel_instance_id, result.tokens)
-        entries = _parse_entries(result.output)
-        for mem_type, content in entries:
+
+        items = _parse_entries(result.output)
+        written = await self._apply_actions(channel_instance_id, items, candidates)
+        logger.info(
+            f"频道 {channel_instance_id} 蒸馏 {len(lines)} 条对话 → "
+            f"{len(items)} 条动作（新增/取代 {written} 条，候选 {len(candidates)} 条）"
+        )
+        return written
+
+    async def _apply_actions(
+        self,
+        channel_instance_id: str,
+        items: list[DistillItem],
+        candidates: list[MemoryEntry],
+    ) -> int:
+        """把解析出的动作落到记忆库，返回实际写入（新增或取代）的条数。
+
+        NOOP 不计入返回值：它表示「库里已经有了」，本轮没有产生新知识。若把它
+        算进去，DistillReport 会把「什么都没变」报成有产出，而 sweep 的调用方
+        靠这个数字判断是否有实际进展。
+
+        一个编号只允许被取代一次：模型可能对同一条候选输出两个 UPDATE（例如把
+        一件事拆成两句话表述），第二次取代的是已被标记的旧条目，会形成
+        A→B→C 的链，而中间那条 B 从未进入过检索。第二次及以后降级为 ADD。
+        """
+        written = 0
+        superseded_refs: set[int] = set()
+
+        for item in items:
+            if item.action is DistillAction.NOOP:
+                continue
+
+            target: MemoryEntry | None = None
+            if item.action is DistillAction.UPDATE and item.ref is not None:
+                # 编号是 1-based 的候选列表序号
+                if 1 <= item.ref <= len(candidates):
+                    if item.ref in superseded_refs:
+                        logger.warning(
+                            f"编号 {item.ref} 已被本轮取代过，本条降级为 ADD"
+                        )
+                    else:
+                        target = candidates[item.ref - 1]
+                else:
+                    # 模型编了一个不存在的编号。降级而非丢弃：内容本身可能有效，
+                    # 丢掉等于让这条知识彻底进不来，多一条重复的代价小得多。
+                    logger.warning(
+                        f"蒸馏引用了不存在的候选编号 {item.ref}"
+                        f"（候选共 {len(candidates)} 条），本条降级为 ADD"
+                    )
+
+            if target is not None:
+                new_entry = await self._memory.supersede(
+                    target.id,
+                    channel_instance_id,
+                    item.content,
+                    type=item.type,
+                    source=MemorySource.DISTILLED,
+                    action=AuditAction.MEMORY_DISTILL,
+                )
+                if new_entry is not None:
+                    superseded_refs.add(item.ref)  # type: ignore[arg-type]
+                    written += 1
+                    continue
+                # supersede 返回 None：旧条目已不存在或不属本频道（跨频道被拒）。
+                # 落到下面按 ADD 处理。
+                logger.warning(f"取代记忆 {target.id} 失败，本条改为新增")
+
             await self._memory.store(
                 channel_instance_id,
-                content,
-                type=mem_type,
+                item.content,
+                type=item.type,
                 source=MemorySource.DISTILLED,
                 action=AuditAction.MEMORY_DISTILL,
             )
-        logger.info(
-            f"频道 {channel_instance_id} 蒸馏 {len(lines)} 条对话 → {len(entries)} 条记忆"
-        )
-        return len(entries)
+            written += 1
+
+        return written

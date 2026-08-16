@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from teamai.domain.models.memory import MemorySource, MemoryType, Visibility
+from teamai.domain.models.memory import MemorySource, MemoryType
 from teamai.infrastructure.db import Base
 
 
@@ -26,8 +26,18 @@ class MemoryEntryModel(Base):
     source: Mapped[MemorySource] = mapped_column(
         Enum(MemorySource), default=MemorySource.MANUAL
     )
-    visibility: Mapped[Visibility] = mapped_column(Enum(Visibility), default=Visibility.CHANNEL)
     embedding_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 取代本条的记忆 id。加索引：检索路径一律带 `superseded_by IS NULL`，
+    # 这是每次查询都要过的条件。
+    #
+    # 不做外键：被取代的条目可能因人工删除而消失（MemoryService.delete 是
+    # 物理删除），外键会让那次删除失败或级联清掉指针 —— 前者阻断正常运维，
+    # 后者丢掉「这条被取代过」这个事实。留一个可能悬空的 id 是有意的取舍，
+    # 读取方只用它判 NULL / 非 NULL，解引用失败不影响正确性。
+    superseded_by: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

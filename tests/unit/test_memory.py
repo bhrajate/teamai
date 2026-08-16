@@ -24,7 +24,6 @@ from teamai.domain.models import (
     MemoryEntry,
     MemorySource,
     MemoryType,
-    Visibility,
 )
 from teamai.domain.ports import Embedder
 from teamai.domain.services import AuditLogWriter
@@ -129,7 +128,7 @@ async def test_存入并留审计() -> None:
 
     assert [e.content for e in repo.stored] == ["超时是 30 秒"]
     assert entry.type is MemoryType.BACKGROUND_KNOWLEDGE
-    assert entry.visibility is Visibility.CHANNEL
+    assert entry.is_current, "新写入的记忆必须是现行事实"
     (log,) = audit_repo.logs
     assert log.action is AuditAction.MEMORY_STORE
     assert log.detail["entry_id"] == entry.id
@@ -256,6 +255,65 @@ async def test_list默认有上界() -> None:
     assert len(await service.list("ch_1", limit=5)) == 5
 
 
+async def test_list默认排除已被取代的条目() -> None:
+    """喂给模型的上下文绝不能含被取代的事实。"""
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_old", channel_instance_id="ch_1", content="旧值"))
+    await repo.store(MemoryEntry(id="mem_new", channel_instance_id="ch_1", content="新值"))
+    old = await repo.get("mem_old")
+    old.supersede("mem_new")
+    await repo.update(old)
+    service, _, _ = _service(repo)
+
+    assert [e.content for e in await service.list("ch_1")] == ["新值"]
+    # 控制台排查历史时显式要全部
+    both = await service.list("ch_1", current_only=False)
+    assert sorted(e.content for e in both) == ["新值", "旧值"]
+
+
+async def test_supersede写新条目并标记旧条目() -> None:
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(id="mem_old", channel_instance_id="ch_1", content="超时 3 秒")
+    )
+    service, _, audit_repo = _service(repo)
+
+    new_entry = await service.supersede("mem_old", "ch_1", "超时 5 秒")
+
+    assert new_entry is not None and new_entry.content == "超时 5 秒"
+    old = await repo.get("mem_old")
+    assert old.superseded_by == new_entry.id
+    assert old.superseded_at is not None
+    assert not old.is_current
+    # 旧条目仍在库里，不是被删掉
+    assert old.content == "超时 3 秒"
+    detail = audit_repo.logs[-1].detail
+    assert detail["action"] == "supersede"
+    assert detail["old_entry_id"] == "mem_old"
+
+
+async def test_supersede拒绝跨频道取代() -> None:
+    """否则 A 频道的蒸馏结果能改写 B 频道的记忆 —— 频道隔离是正确性属性。"""
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(id="mem_b", channel_instance_id="ch_B", content="B 频道的事实")
+    )
+    service, _, _ = _service(repo)
+
+    result = await service.supersede("mem_b", "ch_A", "A 频道想改的内容")
+
+    assert result is None
+    untouched = await repo.get("mem_b")
+    assert untouched.is_current, "B 频道的记忆不该被动过"
+
+
+async def test_supersede对不存在的条目返回None() -> None:
+    service, repo, _ = _service()
+
+    assert await service.supersede("mem_missing", "ch_1", "内容") is None
+    assert repo.stored == [], "旧条目不存在时不该留下半个新条目"
+
+
 async def test_删除留审计() -> None:
     repo = FakeMemoryRepository()
     await _seed(repo, 2)
@@ -346,16 +404,18 @@ async def test_编辑内容并留审计() -> None:
     assert log.detail["content_changed"] is True
 
 
-async def test_编辑保留id与创建时间与可见性() -> None:
-    """与「删一条 + 建一条」的关键区别。visibility 不在可改字段里 ——
-    把 private 改成 channel 属权限变更，应走独立授权路径。"""
+async def test_编辑保留id与创建时间() -> None:
+    """与「删一条 + 建一条」的关键区别：id 与 created_at 不变，审计里看得出
+    是同一条的演进。
+
+    edit 是「这条写错了」的路径，改完仍是同一条事实 —— 与 supersede（「事实
+    变了」，新写一条并把旧的标记为已取代）是两回事。"""
     repo = FakeMemoryRepository()
     await repo.store(
         MemoryEntry(
             id="mem_x",
             channel_instance_id="ch_1",
             content="原内容",
-            visibility=Visibility.PRIVATE,
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
     )
@@ -366,8 +426,8 @@ async def test_编辑保留id与创建时间与可见性() -> None:
     assert edited is not None
     assert edited.id == "mem_x"
     assert edited.created_at == datetime(2026, 1, 1, tzinfo=UTC)
-    assert edited.visibility is Visibility.PRIVATE
     assert edited.type is MemoryType.DECISION
+    assert edited.is_current, "编辑不该把条目标记为已取代"
 
 
 async def test_编辑不存在的条目返回None() -> None:

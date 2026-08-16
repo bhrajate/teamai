@@ -130,9 +130,15 @@ class FakeMemoryRepository(MemoryRepository):
         self.stored.append(entry)
 
     async def list_by_channel(
-        self, channel_instance_id: str, limit: int | None = None
+        self,
+        channel_instance_id: str,
+        limit: int | None = None,
+        *,
+        current_only: bool = True,
     ) -> list[MemoryEntry]:
         out = [e for e in self.stored if e.channel_instance_id == channel_instance_id]
+        if current_only:
+            out = [e for e in out if e.is_current]
         out.sort(key=lambda e: e.created_at, reverse=True)
         return out[:limit] if limit is not None else out
 

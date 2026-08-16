@@ -40,8 +40,14 @@ export const taskApi = {
 
 /** admin/memory.py */
 export const memoryApi = {
-  list: (channelId: string, signal?: AbortSignal) =>
-    request<Memory[]>(`/channels/${channelId}/memories`, { signal }),
+  /**
+   * 默认只返回现行事实。`includeSuperseded` 连已被取代的一起取 —— 排查
+   * 「这条事实之前是什么」时要用，日常看「现在记着什么」不该开。
+   */
+  list: (channelId: string, signal?: AbortSignal, includeSuperseded = false) => {
+    const qs = includeSuperseded ? '?include_superseded=true' : ''
+    return request<Memory[]>(`/channels/${channelId}/memories${qs}`, { signal })
+  },
 
   create: (channelId: string, body: { content: string; type?: MemoryType; user_id?: string }) =>
     request<Memory>(`/channels/${channelId}/memories`, { method: 'POST', body }),
@@ -49,8 +55,8 @@ export const memoryApi = {
   /**
    * 改内容与/或类型。原地改，保留 id 与 created_at。
    *
-   * 后端有意不支持改 visibility —— 把 private 改成 channel 属权限变更而非内容
-   * 编辑。改内容会触发向量重算。
+   * 这是「这条写错了」的路径。「事实变了」由蒸馏的 UPDATE 动作走 supersede ——
+   * 新写一条、旧条目标记 superseded_by，两条都留着。改内容会触发向量重算。
    */
   update: (entryId: string, body: { content?: string; type?: MemoryType; actor?: string }) =>
     request<Memory>(`/memories/${entryId}`, { method: 'PATCH', body }),

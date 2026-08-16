@@ -31,8 +31,19 @@ def build_memory_router(container: Container) -> APIRouter:
     router = APIRouter()
 
     @router.get("/channels/{channel_instance_id}/memories")
-    async def list_memories(channel_instance_id: str) -> list[dict[str, Any]]:
-        entries = await container.memory.list(channel_instance_id)
+    async def list_memories(
+        channel_instance_id: str, include_superseded: bool = False
+    ) -> list[dict[str, Any]]:
+        """列出该频道的记忆。默认只给现行事实。
+
+        `include_superseded=true` 连已被取代的一起返回 —— 「这条事实之前是什么」
+        只有这样才看得到，而这是排查「机器人为什么这么说」的主要线索。默认关
+        是因为控制台的日常用途是看「现在记着什么」，混入历史版本会让同一件事
+        出现多条、看起来像没去重。
+        """
+        entries = await container.memory.list(
+            channel_instance_id, current_only=not include_superseded
+        )
         return [memory_to_dict(e) for e in entries]
 
     @router.post("/channels/{channel_instance_id}/memories")
@@ -52,8 +63,9 @@ def build_memory_router(container: Container) -> APIRouter:
     async def update_memory(entry_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """改内容与/或类型。
 
-        有意**不支持改 visibility**：把 private 改成 channel 等于把本不该进
-        频道记忆的内容放出去，那属权限变更而非内容编辑，应走独立的授权路径。
+        这是「这条记忆写错了」的路径（笔误、措辞），改完仍是同一条事实，保留
+        id 与 created_at。「事实变了」是另一回事 —— 那由蒸馏的 UPDATE 动作走
+        supersede，新写一条并把旧条目标记为已取代，两条都留着可查。
 
         改内容会触发向量重算（见 MemoryService.edit）。
         """

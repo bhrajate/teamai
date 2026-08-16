@@ -13,13 +13,22 @@ class MemoryRepository(ABC):
 
     @abstractmethod
     async def list_by_channel(
-        self, channel_instance_id: str, limit: int | None = None
+        self,
+        channel_instance_id: str,
+        limit: int | None = None,
+        *,
+        current_only: bool = True,
     ) -> list[MemoryEntry]:
         """按 created_at 倒序返回，limit 为 None 时返回全部。
 
         实现必须显式排序：此前实现既无 ORDER BY 也无 LIMIT，调用方却在
         Python 侧切前 N 条当作检索结果 —— 行序由数据库自行决定，等于随机取样。
         全量重建向量索引等场景仍需要拿全部，故保留 None 语义，但默认应传 limit。
+
+        `current_only` 默认 True，排除已被取代的条目（`superseded_by` 非空）。
+        默认值选 True 而非 False：喂给模型的上下文绝不能含被取代的事实，而
+        「忘记传参」在这两个方向上的后果不对称 —— 漏掉历史条目只是少看到几条，
+        混入过期事实会让机器人给出已经作废的答案。控制台排查历史时显式传 False。
         """
         ...
 

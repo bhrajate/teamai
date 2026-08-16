@@ -64,7 +64,7 @@
    - 实现 application/orchestrator.py：TaskOrchestrator（创建、阶段推进、WAITING_INPUT、取消、超时提醒与自动取消、长任务入队）
    - 实现 application/tag.py：TagResolver（标签解析与激活）
    - 实现 application/budget.py：BudgetController（配额核算、上限触发 PAUSED 与通知）
-   - 实现 application/memory.py：MemoryService（频道记忆存储/检索、偏好管理、跨频道授权检查）
+   - 实现 application/memory.py：MemoryService（频道记忆存储/检索、偏好管理、写入侧去重与取代）。**「跨频道授权检查」未实现** —— `ChannelInstance.cross_channel_learning` 有列、有 Admin 端点能改、serializer 也吐给前端，但除存取之外从未被读作任何条件；`query_for_context` 硬绑 `channel_instance_id`，`_semantic_hits` 拿它当向量 namespace。与 `TagTemplate.shared`（见 9. 标签）是同一类死字段。要做须先给 `ChannelInstance` 补来源可见性字段：`Design-claude-tag.md §3.8` 的「目标频道为公共频道」条件当前**不可实现**，库里没有这个信息，而 Slack 的 private_channel 照常建实例、照常蒸馏入库
    - 参考 Design-claude-tag.md §3.2-§3.11
 
 - [ ]* 8.1 编写编排层集成测试（Slack 模拟事件 → 路由 → 编排 → 回复全链路）
@@ -130,6 +130,7 @@
    - 故障级一：记忆检索退化成随机取样。`list_by_channel` 无 ORDER BY 无 LIMIT，调用方却在 Python 侧切前 5 条，行序由数据库决定，且随频道使用时长线性变慢
    - 故障级二：向量路径是死代码。`MemoryService` 收 `embedder` 但组合根从未注入（只传了 `vector_store`），故 Qdrant 从未被写入、语义检索分支永不进入 —— 上一条的无界扫描是生产唯一路径，而非「降级」路径。顺带暴露 Qdrant 集合维度硬编码 384 与常见模型 1536 不匹配，此前被「embedder 从未注入」掩盖
    - 另三处：`thread_history` 字段与压缩逻辑齐备但生产代码从不赋值（机器人被 @ 时看不见上一句）；`Visibility` 枚举建好却无人判定，单聊内容照样进频道记忆（PRD §4.2 承诺未落地）；`audit_logs` 只记动作枚举，还原不出实际提示词与响应
+   - `Visibility` 的后续：判定已由 `router.py` 在进蒸馏窗口**之前**丢弃单聊消息补上（`PRIVATE_CHANNEL_TYPES`），而枚举本身随后**删除** —— 它自始至终没有任何调用方传过非默认值，检索侧也不看它，是个「看起来在做权限控制、实际恒为默认值」的死字段。留着它做跨频道时会写出 `WHERE visibility != 'private'` 这种静默匹配零行的条件并误以为已获得保护。单条记忆的可见性判定改由 `ChannelInstance` 的来源可见性承载：那是客观事实，而非写入时的判断（迁移 `f3b9d27a5c14`）
    - 定论：不做全量镜像。容量不是理由（73 万行/年、150MB，Postgres 毫无压力），真正的理由是所有权与合规（GDPR 删除权无从落实、IM 的逐条消息 ACL 会被镜像拍平）、时效性（编辑与撤回后镜像滞后）、以及它不解决真正的缺口
    - 三层架构：原始消息按需拉平台（`ThreadReader` 端口 + Slack/飞书实现 + Redis 45s 缓存）；`agent_interactions` 表存机器人自己的交互（提示词、响应、实际生效的 `model_id`、分拆 in/out token、`context_refs` 存引用而非快照），按保留期清理；`memory_entries` 回归结论 —— 非 @ 消息进 Redis 滚动窗口，worker 定时蒸馏，原文即弃
    - 飞书线程拉取的结构性差异：没有「按根消息 ID 拉整串」的接口，`container_id_type` 只接受 `chat` 与 `thread`，而 `thread` 要的是话题群的 `omt_` ID，与我们持有的 `om_` 根消息 ID 不是一回事。故按 chat 拉最近一批再按 `root_id` 客户端过滤，代价是多拉后丢弃，换来不依赖话题群这个前提

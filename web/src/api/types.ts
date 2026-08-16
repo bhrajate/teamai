@@ -30,9 +30,6 @@ export type MemoryType = 'BACKGROUND_KNOWLEDGE' | 'PREFERENCE' | 'DECISION' | 'F
  */
 export type MemorySource = 'DISTILLED' | 'MANUAL' | 'EDITED'
 
-/** domain/models/memory.py Visibility */
-export type Visibility = 'channel' | 'private'
-
 /** domain/models/budget.py */
 export type BudgetScope = 'ORGANIZATION' | 'CHANNEL'
 export type BudgetPeriod = 'DAILY' | 'WEEKLY' | 'MONTHLY'
@@ -88,9 +85,14 @@ export type Memory = {
   source_user_id: string | null
   /** 这条是谁写下的 */
   source: MemorySource
-  visibility: Visibility
   /** 有值即已建向量索引。null 表示这条不参与语义检索，只走时间倒序回落。 */
   embedding_ref: string | null
+  /**
+   * 取代本条的记忆 id。非 null 即表示本条已不是现行事实、不再参与检索，
+   * 但仍留在库里 —— 排查「机器人为什么这么说」时要看得到被取代的版本。
+   */
+  superseded_by: string | null
+  superseded_at: string | null
   created_at: string
 }
 

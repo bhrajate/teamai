@@ -36,11 +36,6 @@ class MemorySource(Enum):
     EDITED = "EDITED"
 
 
-class Visibility(Enum):
-    CHANNEL = "channel"
-    PRIVATE = "private"
-
-
 @dataclass
 class MemoryEntry:
     id: str
@@ -49,13 +44,41 @@ class MemoryEntry:
     type: MemoryType = MemoryType.BACKGROUND_KNOWLEDGE
     source_user_id: str | None = None
     source: MemorySource = MemorySource.MANUAL
-    visibility: Visibility = Visibility.CHANNEL
     # 向量库里对应点的 id。有值即表示「已建索引」，据此能查出哪些记忆漏了索引。
     # ⚠️ 改造前这个字段声明了、mapper 两侧也在传，但没有任何代码写入它 ——
     # 于是 scripts/cleanup_chat_memories.py 里 `embedding_ref IS NULL` 恒为真，
     # 那条注释声称的「有向量引用的是正规路径写入的」是不存在的机制。
     embedding_ref: str | None = None
+    # 取代本条的那条记忆的 id。非 None 即表示「本条已不是现行事实」，
+    # 检索默认排除它们，但行仍在库里 —— 排查「机器人为什么这么说」时，
+    # 「当时的说法是什么、被什么取代」比一条已消失的记录有用得多。
+    #
+    # 为什么不物理删除：与 mem0 / Zep 的取舍一致（两者都是 mark invalid
+    # rather than physically removing）。删除不可逆，而蒸馏出的「矛盾」判断
+    # 来自模型，可能是错的。
+    #
+    # 为什么只有一维时间而不是 Zep 的双时间轴（arXiv:2501.13956 §2.1）：
+    # 那套模型分开记「事实在现实中何时成立」（t_valid / t_invalid）与
+    # 「系统何时知道」（t'_created / t'_expired），边失效时把旧边的 t_invalid
+    # 设为新边的 t_valid。本项目的蒸馏是近实时的（窗口满 20 条或静置 600s
+    # 即触发），created_at 与事实实际成立时间的偏差在分钟级，双时间轴的收益
+    # 接近零，而代价是模型要从对话里额外抽取时间信息。故退化为单时间轴：
+    # created_at 兼任 t'_created，superseded_at 兼任 t_invalid。
+    # 若将来真需要表达「某事实在某段区间内有效」，superseded_at 已在表里，
+    # 补一个 valid_from 即可，不必重构。
+    superseded_by: str | None = None
+    superseded_at: datetime | None = None
     created_at: datetime = field(default_factory=_utcnow)
+
+    @property
+    def is_current(self) -> bool:
+        """本条是否仍是现行事实。"""
+        return self.superseded_by is None
+
+    def supersede(self, by_entry_id: str, at: datetime | None = None) -> None:
+        """标记本条被 `by_entry_id` 取代。"""
+        self.superseded_by = by_entry_id
+        self.superseded_at = at or _utcnow()
 
     def edited(self) -> MemorySource:
         """人工修改后该落到哪个 source。

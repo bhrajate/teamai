@@ -44,9 +44,12 @@ def memory_to_dict(entry: MemoryEntry) -> dict[str, Any]:
         # 产生方式（DISTILLED / MANUAL / EDITED）。与 source_user_id 并列输出：
         # 后者对蒸馏产出与管理台写入都是 null，只有这个字段能区分它们。
         "source": entry.source.value,
-        "visibility": entry.visibility.value,
         # 有值即已建向量索引，据此能查出漏索引的条目
         "embedding_ref": entry.embedding_ref,
+        # 取代本条的记忆 id。非 null 即表示本条已不是现行事实、不再参与检索，
+        # 但仍留在库里供排查「这条事实之前是什么」。
+        "superseded_by": entry.superseded_by,
+        "superseded_at": entry.superseded_at.isoformat() if entry.superseded_at else None,
         "created_at": entry.created_at.isoformat(),
     }
 
