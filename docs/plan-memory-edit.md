@@ -1,6 +1,9 @@
 > **已实施完毕，本文保留作决策记录。** 落地结果与实施中的新发现见
 > `docs/Design-conversation-context.md` §6.5 —— 那里是长期维护的正文，本文只是当时的施工计划。
 >
+> 2026-08-18 注：文中提到的 `preferences` 表与 `set_preference` / `list_preferences`
+> 接口已随「记忆合表」改动删除 —— 偏好统一为 `memory_entries` 的 `PREFERENCE` 类型行。
+>
 > 与计划的三处偏差：
 > 1. 实施中发现 `upsert` 传 dict 导致**向量写入从未成功过**（计划里没有这一条，它是第 1 步动手后才暴露的）。
 > 2. 发现 `auditaction` 枚举漏迁移，导致**已进主干的记忆蒸馏在任何已升级的库上都失败**。补了迁移 + 一条静态守卫。

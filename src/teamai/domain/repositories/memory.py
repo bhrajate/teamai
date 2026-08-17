@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from teamai.domain.models.memory import MemoryEntry, Preference
+from teamai.domain.models.memory import MemoryEntry, MemoryType
 
 
 class MemoryRepository(ABC):
@@ -18,6 +18,7 @@ class MemoryRepository(ABC):
         limit: int | None = None,
         *,
         current_only: bool = True,
+        exclude_type: MemoryType | None = None,
     ) -> list[MemoryEntry]:
         """按 created_at 倒序返回，limit 为 None 时返回全部。
 
@@ -29,6 +30,11 @@ class MemoryRepository(ABC):
         默认值选 True 而非 False：喂给模型的上下文绝不能含被取代的事实，而
         「忘记传参」在这两个方向上的后果不对称 —— 漏掉历史条目只是少看到几条，
         混入过期事实会让机器人给出已经作废的答案。控制台排查历史时显式传 False。
+
+        `exclude_type` 排除指定类型的条目，默认 None＝全部。它目前只为
+        `MemoryService.query_for_context` 的语义回落服务（排除 PREFERENCE，
+        避免偏好混进 top_k 名额）；`find_similar` 的回落不加这个参数 ——
+        那里偏好靠显式追加、按 id 去重。
         """
         ...
 
@@ -50,7 +56,11 @@ class MemoryRepository(ABC):
     async def delete(self, entry_id: str) -> None: ...
 
     @abstractmethod
-    async def set_preference(self, pref: Preference) -> None: ...
+    async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
+        """列该频道的现行偏好（type='PREFERENCE' 且未被取代），按 created_at 倒序。
 
-    @abstractmethod
-    async def list_preferences(self, channel_instance_id: str) -> list[Preference]: ...
+        偏好是 memory_entries 里 type='PREFERENCE' 的一类，不单独建向量（见
+        MemoryService._vector_ready / _embed_if_available 的取舍）：语义检索
+        找不到它，只有本方法这条显式路径会取 —— 检索时由调用方全量带上。
+        """
+        ...

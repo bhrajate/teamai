@@ -1,4 +1,4 @@
-"""记忆领域模型：MemoryEntry 与 Preference。"""
+"""记忆领域模型：MemoryEntry（偏好是其 PREFERENCE 类型）。"""
 
 from __future__ import annotations
 
@@ -42,6 +42,9 @@ class MemoryEntry:
     channel_instance_id: str
     content: str
     type: MemoryType = MemoryType.BACKGROUND_KNOWLEDGE
+    # 对普通记忆：哪条用户消息变成了这条（蒸馏时通常为 None，人工写入时是录入人）。
+    # 对 PREFERENCE 类型（偏好）：谁设的这条偏好 —— 对应合表前独立 preferences 表的
+    # `user_id` 字段。「偏好只带发起人自己的」收窄实现时需要按它过滤。
     source_user_id: str | None = None
     source: MemorySource = MemorySource.MANUAL
     # 向量库里对应点的 id。有值即表示「已建索引」，据此能查出哪些记忆漏了索引。
@@ -87,12 +90,3 @@ class MemoryEntry:
         仍然是人写的；改第二次也不必再变）。
         """
         return MemorySource.EDITED if self.source is MemorySource.DISTILLED else self.source
-
-
-@dataclass
-class Preference:
-    id: str
-    channel_instance_id: str
-    user_id: str
-    preference: str
-    created_at: datetime = field(default_factory=_utcnow)

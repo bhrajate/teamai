@@ -1,9 +1,13 @@
-"""记忆服务：频道记忆存储/检索、偏好管理。
+"""记忆服务：频道记忆的存储、检索与偏好分层。
 
 本服务只处理「结论」—— 值得跨会话记住的事实、决策与偏好。原始聊天消息不进
 这里：它们先进 MessageWindow 滚动缓冲，由 MemoryDistiller 蒸馏后才可能变成
 一条记忆。此前 router 把每条非 @ 消息直接塞进来，导致「收到」「好的」与真正
 的项目背景知识并列存放，向量检索的信噪比被彻底稀释。
+
+偏好（MemoryType.PREFERENCE）是普通记忆里的一类，没有独立表（合表改动）：
+它不建向量、检索时由 query_for_context 全量带上，因为它是「怎么回答」的约束
+而非「回答什么」的候选。
 """
 
 from __future__ import annotations
@@ -16,7 +20,6 @@ from teamai.domain.models import (
     MemoryEntry,
     MemorySource,
     MemoryType,
-    Preference,
 )
 from teamai.domain.ports import Embedder
 from teamai.domain.repositories import ChannelRepository, MemoryRepository
@@ -215,7 +218,9 @@ class MemoryService:
 
         与 `query_for_context` 的区别：那个的输入是用户的提问、结果要喂给模型
         当上下文，故一并带上全部偏好；这个的输入是刚蒸馏出的一条结论、结果是
-        给模型看的「候选比对项」，不需要偏好。共用底层的向量检索路径。
+        给模型看的「候选比对项」，同样要包含偏好 —— 偏好不建向量、`_semantic_hits`
+        找不回它；若候选不含偏好，模型对「团队偏好」内容每窗口都判 ADD，
+        偏好会确定性堆积。故偏好显式追加，按 id 去重。
 
         向量不可用时回落到时间倒序：宁可让模型比对最近若干条，也不要直接返回
         空 —— 空候选会让每条蒸馏结果都判成 ADD，去重完全失效。
@@ -225,36 +230,37 @@ class MemoryService:
             hits = await self._repo.list_by_channel(
                 channel_instance_id, limit=min(top_k, FALLBACK_LIMIT)
             )
-        return hits[:top_k]
-
-    async def set_preference(
-        self, channel_instance_id: str, user_id: str, preference: str
-    ) -> Preference:
-        pref = Preference(
-            id=gen_id("pref"),
-            channel_instance_id=channel_instance_id,
-            user_id=user_id,
-            preference=preference,
-        )
-        await self._repo.set_preference(pref)
-        return pref
+        prefs = await self._repo.list_preferences(channel_instance_id)
+        seen = {e.id for e in hits}
+        hits = hits[:top_k]
+        hits.extend(p for p in prefs if p.id not in seen)
+        return hits
 
     async def query_for_context(
         self, channel_instance_id: str, query: str, top_k: int = 5
     ) -> list[MemoryEntry]:
         """面向 Agent 上下文的记忆检索：语义命中 + 该频道全部偏好。
 
-        偏好不参与向量检索、一律全带上：它们是「怎么回答」的约束（语气、格式、
-        禁忌），与当前问题的语义相关度无关 —— 按相似度筛会让偏好在问到无关话题
-        时失效。
+        检索分两段，互不抢名额：
+        - **语义段**：与问题相关的现行记忆（`_semantic_hits` 已排除偏好；向量
+          不可用时按时间倒序回落，同样用 `exclude_type` 排掉偏好）。
+        - **偏好段**：该频道全部现行偏好，无条件全量带上。偏好是「怎么回答」的
+          约束（语气、格式、禁忌），与当前问题的语义相关度无关 —— 按相似度筛
+          会让偏好在问到无关话题时失效。
+
+        偏好渲染只在返回侧加 `偏好(U1): ` 前缀、不污染存储 content：写进内容
+        会让未来蒸馏比对「偏好(…)」开头的文本永远匹配不进旧偏好，去重失效。
+        `source_user_id` 为 None（蒸馏偏好的常态）时不加前缀。
         """
         hits = await self._semantic_hits(channel_instance_id, query, top_k)
         if not hits:
-            # 回落：按时间倒序取最近若干条，有界。此前这里是无 ORDER BY、
-            # 无 LIMIT 的全表查询再在 Python 侧切片，等于随机取样，且随频道
-            # 使用时长线性变慢。
+            # 回落：按时间倒序取最近若干条，有界、并排除偏好。此前这里是无
+            # ORDER BY、无 LIMIT 的全表查询再在 Python 侧切片，等于随机取样，
+            # 且随频道使用时长线性变慢。
             hits = await self._repo.list_by_channel(
-                channel_instance_id, limit=min(top_k, FALLBACK_LIMIT)
+                channel_instance_id,
+                limit=min(top_k, FALLBACK_LIMIT),
+                exclude_type=MemoryType.PREFERENCE,
             )
 
         prefs = await self._repo.list_preferences(channel_instance_id)
@@ -262,10 +268,15 @@ class MemoryService:
         result.extend(
             MemoryEntry(
                 id=p.id,
-                channel_instance_id=channel_instance_id,
-                content=f"偏好({p.user_id}): {p.preference}",
+                channel_instance_id=p.channel_instance_id,
+                content=(
+                    f"偏好({p.source_user_id}): {p.content}"
+                    if p.source_user_id
+                    else p.content
+                ),
                 type=MemoryType.PREFERENCE,
-                source_user_id=p.user_id,
+                source_user_id=p.source_user_id,
+                source=p.source,
             )
             for p in prefs
         )
@@ -285,10 +296,18 @@ class MemoryService:
             logger.warning(f"向量检索失败，回落到时间倒序: {exc}")
             return []
         entries = [await self._repo.get(eid) for eid in ids]
-        # 过滤已被取代的：supersede 时会撤掉旧向量，但那一步失败只告警
-        # （_drop_vector 的取舍），残留向量仍会命中。这里兜一道，避免过期事实
-        # 靠一次失败的向量删除就流回上下文。
-        return [e for e in entries if e is not None and e.is_current]
+        # 过滤已被取代的、以及偏好：被取代条目在 supersede 时会撤向量，但撤向量
+        # 失败只告警（_drop_vector 的取舍），残留向量仍会命中，这里兜一道，避免
+        # 过期事实靠一次失败的向量删除就流回上下文。偏好是「无条件全带」的固定
+        # 上下文、不参与 top_k 竞争，本不该有向量，但生产库可能残留合表前蒸馏写
+        # 下的 PREFERENCE 向量 —— 一并滤掉，否则它占着 top_k 名额还与偏好段重复。
+        return [
+            e
+            for e in entries
+            if e is not None
+            and e.is_current
+            and e.type is not MemoryType.PREFERENCE
+        ]
 
     async def list(
         self,
@@ -340,7 +359,13 @@ class MemoryService:
 
         失败时删掉旧向量并返回 None：见 edit() 里的说明 —— 留着旧向量会让
         检索按已被改掉的内容命中它，比没有索引更糟。
+
+        编辑后是偏好同样要删旧向量再返回：偏好不建向量（见 _embed_if_available），
+        直接 return 会留下「按被改掉的内容命中」的旧向量。
         """
+        if entry.type is MemoryType.PREFERENCE:
+            await self._drop_vector(entry.id)
+            return None
         if not self._vector_ready:
             await self._drop_vector(entry.id)
             return None
@@ -359,7 +384,12 @@ class MemoryService:
         回填之后「哪些记忆已建索引」才可查 —— 改造前这个字段声明了、mapper
         两侧也在传，但没有任何代码写入它，于是
         scripts/cleanup_chat_memories.py 里 `embedding_ref IS NULL` 恒为真。
+
+        偏好跳过向量：偏好不走语义检索（检索时无条件全带），建了向量只会白白
+        竞争 top_k 名额。
         """
+        if entry.type is MemoryType.PREFERENCE:
+            return
         if not self._vector_ready:
             return
         try:

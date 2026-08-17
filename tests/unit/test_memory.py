@@ -216,20 +216,100 @@ async def test_向量库异常时降级到时间倒序() -> None:
 async def test_偏好不受top_k裁剪全部带上() -> None:
     """偏好是「怎么回答」的约束（语气、格式、禁忌），与当前问题的语义相关度无关。
 
-    按相似度筛会让偏好在问到无关话题时失效。
+    按相似度筛会让偏好在问到无关话题时失效。本用例同时是回落路径 `exclude_type`
+    的唯一验证（无向量/embedder 时走时间倒序回落）：语义段取最新 2 条**非偏好**
+    事实（偏好不混进 top_k），偏好段全量带 2 条。
     """
     repo = FakeMemoryRepository()
     await _seed(repo, 10)
     service, _, _ = _service(repo)
-    await service.set_preference("ch_1", "U1", "回答要简短")
-    await service.set_preference("ch_1", "U2", "别用 emoji")
+    await service.store(
+        "ch_1", "回答要简短", source_user_id="U1", type=MemoryType.PREFERENCE
+    )
+    await service.store(
+        "ch_1", "别用 emoji", source_user_id="U2", type=MemoryType.PREFERENCE
+    )
 
     hits = await service.query_for_context("ch_1", "问个问题", top_k=2)
 
     prefs = [h for h in hits if h.type is MemoryType.PREFERENCE]
     assert len(prefs) == 2
     assert len(hits) == 4, "2 条记忆 + 2 条偏好"
-    assert "回答要简短" in prefs[0].content
+    assert "回答要简短" in " ".join(p.content for p in prefs)
+    assert "偏好(U1): " in " ".join(p.content for p in prefs), "偏好带「谁设的」前缀"
+    semantic = [h for h in hits if h.type is not MemoryType.PREFERENCE]
+    assert [h.content for h in semantic] == ["事实 9", "事实 8"], "偏好不占用 top_k 名额"
+
+
+async def test_偏好不建向量() -> None:
+    """偏好是「无条件全带」的固定上下文，不该参与 top_k 竞争。"""
+    vector = StubVectorStore()
+    embedder = StubEmbedder()
+    service, _, _ = _service(vector=vector, embedder=embedder)
+
+    await service.store("ch_1", "回答要简短", type=MemoryType.PREFERENCE)
+    await service.store("ch_1", "值得记的事实")
+
+    assert vector.upserted_content == ["值得记的事实"], "只有普通记忆建向量，偏好跳过"
+
+
+async def test_编辑为偏好时删除旧向量() -> None:
+    """编辑成偏好后不建向量，但必须删掉旧向量 —— 否则按被改掉的内容命中。"""
+    vector = StubVectorStore()
+    embedder = StubEmbedder()
+    service, _, _ = _service(vector=vector, embedder=embedder)
+    entry = await service.store("ch_1", "旧内容")
+
+    await service.edit(entry.id, content="新内容", type=MemoryType.PREFERENCE)
+
+    assert vector.deleted == [entry.id]
+    assert vector.upserted == [entry.id], "编辑成偏好后不再 upsert"
+
+
+async def test_偏好不进语义命中() -> None:
+    """即便向量库残留偏好 id（合表前蒸馏写的），偏好也只出现在偏好段、不占 top_k。"""
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(
+            id="mem_pref", channel_instance_id="ch_1",
+            content="回答要简短", type=MemoryType.PREFERENCE,
+        )
+    )
+    await repo.store(
+        MemoryEntry(id="mem_fact", channel_instance_id="ch_1", content="超时是 30 秒")
+    )
+    vector = StubVectorStore(hits=["mem_pref", "mem_fact"])
+    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
+
+    hits = await service.query_for_context("ch_1", "问个问题", top_k=2)
+
+    semantic = [h for h in hits if h.type is not MemoryType.PREFERENCE]
+    assert [h.id for h in semantic] == ["mem_fact"], "残留偏好向量被 _semantic_hits 过滤"
+    prefs = [h for h in hits if h.type is MemoryType.PREFERENCE]
+    assert [h.id for h in prefs] == ["mem_pref"], "偏好经显式段返回"
+
+
+async def test_find_similar候选含偏好() -> None:
+    """蒸馏比对候选必须含偏好：否则模型看不到已有偏好，每窗口都对「团队偏好」
+    内容判 ADD|PREFERENCE，偏好确定性堆积。"""
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(
+            id="mem_pref", channel_instance_id="ch_1",
+            content="回答要简短", type=MemoryType.PREFERENCE,
+        )
+    )
+    await repo.store(
+        MemoryEntry(id="mem_fact", channel_instance_id="ch_1", content="超时是 30 秒")
+    )
+    vector = StubVectorStore(hits=["mem_fact"])  # 向量命中只有事实，偏好无向量
+    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
+
+    candidates = await service.find_similar("ch_1", "回答要简短", top_k=3)
+
+    candidate_ids = [c.id for c in candidates]
+    assert "mem_fact" in candidate_ids
+    assert "mem_pref" in candidate_ids, "偏好必须出现在蒸馏候选里，模型才能判 NOOP/UPDATE"
 
 
 async def test_频道隔离() -> None:

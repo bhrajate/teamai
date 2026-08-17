@@ -1,4 +1,8 @@
-"""memory_entries 与 preferences 表（同属记忆聚合）。"""
+"""memory_entries 表（记忆聚合的单一存储，偏好是其中的 PREFERENCE 类型）。
+
+此前偏好另有独立的 preferences 表；合表后偏好作为 `type='PREFERENCE'` 的行
+统一落在本表，检索按类型分层（见 MemoryService.query_for_context / find_similar）。
+"""
 
 from __future__ import annotations
 
@@ -38,15 +42,4 @@ class MemoryEntryModel(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-
-
-class PreferenceModel(Base):
-    __tablename__ = "preferences"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    channel_instance_id: Mapped[str] = mapped_column(String(32), index=True)
-    # 飞书 user_id（ou_+32hex）超旧宽度，加宽
-    user_id: Mapped[str] = mapped_column(String(64))
-    preference: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

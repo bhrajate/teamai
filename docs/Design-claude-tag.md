@@ -59,7 +59,7 @@ graph TD
 
 4. **执行层**（Agent Runtime）：核心 Agent 循环（感知 → 规划 → 工具调用 → 结果合成），每次调用 LLM Gateway 获取模型输出，调用 Tool Registry 执行工具，将阶段性结果写回任务子线程。
 
-5. **记忆层**（Memory Service）：频道级记忆读写。结构化偏好存 KV，非结构化背景知识经 embedding 入向量库，支持语义检索。
+5. **记忆层**（Memory Service）：频道级记忆读写。偏好与背景知识统一存 memory_entries（偏好是 `type='PREFERENCE'` 的行：不建向量、检索时全量带上；背景知识经 embedding 入向量库按语义召回），支持语义检索。
 
 6. **治理层**（Admin API / Permission / Budget / Audit）：管理员面板、权限策略、预算配额、审计日志四者协同，保证可治理性。
 
@@ -124,13 +124,11 @@ graph TD
 
 ### 3.8 Memory Service
 
-- **职责**：频道记忆读写、偏好管理、语义检索、跨频道授权
+- **职责**：频道记忆读写、语义检索、跨频道授权
 - **接口**：
-  - `store(channelId, entry)`
-  - `query(channelId, query, topK) -> MemoryHit[]`
-  - `setPreference(channelId, userId, pref)`
-  - `getPreference(channelId, userId)`
-  - `adminList(channelId) / adminEdit(id) / adminDelete(id)`
+  - `store(channelId, entry)`（`type=PREFERENCE` 即偏好；偏好不建向量）
+  - `query(channelId, query, topK) -> MemoryHit[]`（语义命中排除偏好；该频道全部现行偏好另行全量带上）
+  - `adminList(channelId) / adminEdit(id) / adminDelete(id)`（录入偏好即 POST `type=PREFERENCE` 的记忆）
 - **跨频道授权**：仅当管理员开启该实例的跨频道学习授权且目标频道为公共频道时，检索才允许跨频道
 
 ### 3.9 Budget Controller

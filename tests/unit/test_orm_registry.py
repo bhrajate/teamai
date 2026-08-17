@@ -21,7 +21,6 @@ EXPECTED_TABLES = {
     "channel_instances",
     "memory_entries",
     "permission_policies",
-    "preferences",
     "tag_templates",
     "tasks",
 }

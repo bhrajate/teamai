@@ -495,7 +495,7 @@ sequenceDiagram
 | 入队失败降级 | MessageRouter 捕获 ConnectionError，就地同步执行 | Redis 不可用时功能不整体失效，代价是本次响应变慢 |
 | 任务状态持久化 | PostgreSQL 事务 + 状态机校验 | 崩溃恢复与审计一致 |
 | 事务边界 | SQL 仓储的写方法各自 commit | 容器持有单个共享 session，不提交则改动对别的进程不可见（worker 会读不到任务）。代价是「建任务」与「写审计」分属两个事务；要整条消息一个事务需引入 UnitOfWork 或 session-per-task |
-| 记忆检索 | 文本 embedding 入 Qdrant + KV 存偏好 | 语义召回 + 精确偏好 |
+| 记忆检索 | 文本 embedding 入 Qdrant；偏好是 memory_entries 的 `PREFERENCE` 行（不建向量、检索时全量带） | 语义召回 + 偏好无条件在场 |
 | 幂等 | 按信封 `event_id` 去重，Redis `SET NX EX` 原子记账 | 防 Slack 重投/乱序 |
 | 模型分级 | ModelRegistry.build(model_level) 预装配不同 Agent | 简单任务轻量模型，复杂任务旗舰模型 |
 | 预算硬上限 | pydantic-ai UsageLimits + Anthropic task_budget | 超限抛 UsageLimitExceeded → 任务 PAUSED |

@@ -5,9 +5,9 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from teamai.domain.models.memory import MemoryEntry, Preference
+from teamai.domain.models.memory import MemoryEntry, MemoryType
 from teamai.domain.repositories.memory import MemoryRepository
-from teamai.infrastructure.orm.memory import MemoryEntryModel, PreferenceModel
+from teamai.infrastructure.orm.memory import MemoryEntryModel
 
 
 def _memory_to_model(e: MemoryEntry) -> MemoryEntryModel:
@@ -40,26 +40,6 @@ def _model_to_memory(m: MemoryEntryModel) -> MemoryEntry:
     )
 
 
-def _preference_to_model(p: Preference) -> PreferenceModel:
-    return PreferenceModel(
-        id=p.id,
-        channel_instance_id=p.channel_instance_id,
-        user_id=p.user_id,
-        preference=p.preference,
-        created_at=p.created_at,
-    )
-
-
-def _model_to_preference(m: PreferenceModel) -> Preference:
-    return Preference(
-        id=m.id,
-        channel_instance_id=m.channel_instance_id,
-        user_id=m.user_id,
-        preference=m.preference,
-        created_at=m.created_at,
-    )
-
-
 class SQLMemoryRepository(MemoryRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -75,6 +55,7 @@ class SQLMemoryRepository(MemoryRepository):
         limit: int | None = None,
         *,
         current_only: bool = True,
+        exclude_type: MemoryType | None = None,
     ) -> list[MemoryEntry]:
         """按 created_at 倒序返回，limit 为 None 时全量。
 
@@ -88,6 +69,8 @@ class SQLMemoryRepository(MemoryRepository):
         )
         if current_only:
             stmt = stmt.where(MemoryEntryModel.superseded_by.is_(None))
+        if exclude_type is not None:
+            stmt = stmt.where(MemoryEntryModel.type != exclude_type)
         stmt = stmt.order_by(MemoryEntryModel.created_at.desc())
         if limit is not None:
             stmt = stmt.limit(limit)
@@ -114,11 +97,20 @@ class SQLMemoryRepository(MemoryRepository):
             await self._session.delete(m)
             await self._session.commit()
 
-    async def set_preference(self, pref: Preference) -> None:
-        self._session.add(_preference_to_model(pref))
-        await self._session.commit()
+    async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
+        """该频道现行偏好：type='PREFERENCE' 且未被取代，按 created_at 倒序。
 
-    async def list_preferences(self, channel_instance_id: str) -> list[Preference]:
-        stmt = select(PreferenceModel).where(PreferenceModel.channel_instance_id == channel_instance_id)
+        检索时偏好是被全量带上的固定上下文（query_for_context / find_similar），
+        不是 top_k 竞争的候选，故不建向量、不走语义路径，就这一条查询。
+        """
+        stmt = (
+            select(MemoryEntryModel)
+            .where(
+                MemoryEntryModel.channel_instance_id == channel_instance_id,
+                MemoryEntryModel.type == MemoryType.PREFERENCE,
+                MemoryEntryModel.superseded_by.is_(None),
+            )
+            .order_by(MemoryEntryModel.created_at.desc())
+        )
         rows = (await self._session.execute(stmt)).scalars().all()
-        return [_model_to_preference(r) for r in rows]
+        return [_model_to_memory(r) for r in rows]

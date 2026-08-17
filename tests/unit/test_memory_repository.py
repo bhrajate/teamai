@@ -179,6 +179,34 @@ async def test_频道隔离(repo: SQLMemoryRepository) -> None:
     assert [r.id for r in rows] == ["mem_b"]
 
 
+async def test_exclude_type排除指定类型(repo: SQLMemoryRepository) -> None:
+    """语义回落路径用它排掉偏好，别让偏好混进 top_k 名额。"""
+    await repo.store(_entry("mem_fact", content="超时 30 秒"))
+    await repo.store(
+        _entry("mem_pref", content="回答要简短", type=MemoryType.PREFERENCE, offset_minutes=1)
+    )
+
+    rows = await repo.list_by_channel("ch_1", exclude_type=MemoryType.PREFERENCE)
+
+    assert [r.id for r in rows] == ["mem_fact"]
+
+
+async def test_list_preferences只列现行偏好且按时间倒序(repo: SQLMemoryRepository) -> None:
+    await repo.store(_entry("mem_fact", content="超时 30 秒"))
+    await repo.store(_entry("mem_pref_a", content="回答要简短", type=MemoryType.PREFERENCE))
+    await repo.store(
+        _entry("mem_pref_b", content="别用 emoji", type=MemoryType.PREFERENCE, offset_minutes=5)
+    )
+    # 被取代的偏好不是现行事实，不应出现
+    pref_a = await repo.get("mem_pref_a")
+    pref_a.supersede("mem_pref_b")
+    await repo.update(pref_a)
+
+    rows = await repo.list_preferences("ch_1")
+
+    assert [r.id for r in rows] == ["mem_pref_b"]
+
+
 async def test_删除后读不到(repo: SQLMemoryRepository, session) -> None:
     await repo.store(_entry("mem_1"))
 

@@ -372,7 +372,7 @@ def feishu_enabled(self) -> bool:
 | `orm/task.py` | `owner_id` / `canceled_by` | `String(32)` | `String(64)` | 同上 |
 | `orm/audit.py:22` | `user_id` | `String(32)` | `String(64)` | 同上 |
 | `orm/memory.py:21` | `source_user_id` | `String(32)` | `String(64)` | 同上 |
-| `orm/memory.py:32` | `user_id`（Preference） | `String(32)` | `String(64)` | 同上 |
+| ~~`orm/memory.py:32`~~ | ~~`user_id`（Preference）~~ | ~~`String(32)`~~ | ~~`String(64)`~~ | ~~同上~~（preferences 表已于 2026-08-18 合表删除，偏好由 memory_entries.source_user_id 承载） |
 
 内部 ULID（`id`、`channel_instance_id`、`agent_identity`）保持 `String(32)` 不动。
 

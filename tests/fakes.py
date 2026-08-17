@@ -15,7 +15,7 @@ from teamai.domain.models import (
     BudgetQuota,
     ChannelInstance,
     MemoryEntry,
-    Preference,
+    MemoryType,
     Task,
     TaskStatus,
 )
@@ -124,7 +124,6 @@ class FakeMemoryRepository(MemoryRepository):
 
     def __init__(self) -> None:
         self.stored: list[MemoryEntry] = []
-        self.prefs: list[Preference] = []
 
     async def store(self, entry: MemoryEntry) -> None:
         self.stored.append(entry)
@@ -135,10 +134,13 @@ class FakeMemoryRepository(MemoryRepository):
         limit: int | None = None,
         *,
         current_only: bool = True,
+        exclude_type: MemoryType | None = None,
     ) -> list[MemoryEntry]:
         out = [e for e in self.stored if e.channel_instance_id == channel_instance_id]
         if current_only:
             out = [e for e in out if e.is_current]
+        if exclude_type is not None:
+            out = [e for e in out if e.type is not exclude_type]
         out.sort(key=lambda e: e.created_at, reverse=True)
         return out[:limit] if limit is not None else out
 
@@ -156,11 +158,16 @@ class FakeMemoryRepository(MemoryRepository):
     async def delete(self, entry_id: str) -> None:
         self.stored = [e for e in self.stored if e.id != entry_id]
 
-    async def set_preference(self, pref: Preference) -> None:
-        self.prefs.append(pref)
-
-    async def list_preferences(self, channel_instance_id: str) -> list[Preference]:
-        return [p for p in self.prefs if p.channel_instance_id == channel_instance_id]
+    async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
+        out = [
+            e
+            for e in self.stored
+            if e.channel_instance_id == channel_instance_id
+            and e.type is MemoryType.PREFERENCE
+            and e.is_current
+        ]
+        out.sort(key=lambda e: e.created_at, reverse=True)
+        return out
 
 
 class FakeChannelRepository(ChannelRepository):
