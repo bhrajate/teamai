@@ -289,6 +289,50 @@ async def test_偏好不进语义命中() -> None:
     assert [h.id for h in prefs] == ["mem_pref"], "偏好经显式段返回"
 
 
+async def test_只改type为偏好时删掉旧向量() -> None:
+    """向量该不该存在由 type 决定，而 type 可改 —— 只改 type 不改 content 时
+    也必须同步向量，否则旧向量残留在库里白占 top_k 名额。"""
+    vector = StubVectorStore()
+    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+    entry = await service.store("ch_1", "回答要简短")
+    assert vector.upserted == [entry.id], "普通记忆建了向量"
+
+    await service.edit(entry.id, type=MemoryType.PREFERENCE)
+
+    assert vector.deleted == [entry.id], "改成偏好后旧向量被删"
+    updated = await service.list("ch_1")
+    assert updated[0].embedding_ref is None
+
+
+async def test_只改type改回普通记忆时补建向量() -> None:
+    """反方向：偏好当初跳过了建索引，改回普通记忆若不补建，这条记忆永远进不了
+    语义检索，只能靠时间倒序回落偶然捞到。"""
+    vector = StubVectorStore()
+    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+    entry = await service.store("ch_1", "超时是 30 秒", type=MemoryType.PREFERENCE)
+    assert vector.upserted == [], "偏好没建向量"
+
+    await service.edit(entry.id, type=MemoryType.FACT)
+
+    assert vector.upserted == [entry.id], "改回普通记忆后补建了向量"
+    assert vector.upserted_content == ["超时是 30 秒"]
+    updated = await service.list("ch_1")
+    assert updated[0].embedding_ref is not None
+
+
+async def test_只改content不跨偏好边界时不多删向量() -> None:
+    """同类型内改内容走原有路径：重算一次向量，不该因为新增的边界判定而多删。"""
+    vector = StubVectorStore()
+    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+    entry = await service.store("ch_1", "超时是 30 秒", type=MemoryType.FACT)
+
+    await service.edit(entry.id, content="超时是 5 秒", type=MemoryType.FACT)
+
+    assert vector.upserted == [entry.id, entry.id], "建一次 + 重算一次"
+    assert vector.upserted_content == ["超时是 30 秒", "超时是 5 秒"]
+    assert vector.deleted == [], "重算成功就不该删"
+
+
 async def test_find_similar候选含偏好() -> None:
     """蒸馏比对候选必须含偏好：否则模型看不到已有偏好，每窗口都对「团队偏好」
     内容判 ADD|PREFERENCE，偏好确定性堆积。"""

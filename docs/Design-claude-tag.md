@@ -213,22 +213,35 @@ graph TD
   "type": "BACKGROUND_KNOWLEDGE",
   "content": "支付模块依赖 redis 缓存，变更需同步刷新缓存",
   "embeddingRef": "vec_001",
-  "visibility": "channel",
+  "source": "DISTILLED",
+  "supersededBy": null,
+  "supersededAt": null,
   "createdAt": "2026-08-06T09:00:00Z"
 }
 ```
 
-### 4.4 Preference
+`type` 取 `BACKGROUND_KNOWLEDGE` / `DECISION` / `FACT` / `PREFERENCE` 之一。`source` 记「这条是谁写下的」（`DISTILLED` 蒸馏产出 / `MANUAL` 人工录入 / `EDITED` 蒸馏产出后被人改过），与 `sourceUserId`（哪个用户的话变成了这条）是两件事。`supersededBy` 非空即表示本条已被取代、不再是现行事实，行仍留在库里供排查。
+
+### 4.4 偏好（MemoryEntry 的 PREFERENCE 类型）
+
+偏好没有独立实体与独立表，它是 `type='PREFERENCE'` 的 MemoryEntry，`sourceUserId` 承载「谁设的这条偏好」：
 
 ```json
 {
-  "id": "pref_001",
+  "id": "mem_002",
   "channelInstanceId": "ch_123",
-  "userId": "U123",
-  "preference": "代码审查请优先关注安全漏洞",
+  "sourceUserId": "U123",
+  "type": "PREFERENCE",
+  "content": "代码审查请优先关注安全漏洞",
+  "embeddingRef": null,
+  "source": "MANUAL",
+  "supersededBy": null,
+  "supersededAt": null,
   "createdAt": "2026-08-06T10:00:00Z"
 }
 ```
+
+`embeddingRef` 恒为 null：偏好不建向量。它是「怎么回答」的约束（语气、格式、禁忌），与当前问题的语义相关度无关 —— 按相似度筛会让它在问到无关话题时失效，故检索时无条件全量带上，不参与 top_k 竞争。
 
 ### 4.5 TagTemplate
 

@@ -58,6 +58,20 @@ class MemoryService:
         """
         return self._vector is not None and self._embedder is not None and self._embedder.available
 
+    @staticmethod
+    def _should_embed(type: MemoryType) -> bool:
+        """这个类型的记忆该不该有向量。唯一的判定处，写入与编辑两条路径都问它。
+
+        偏好不建向量：它在检索时被无条件全量带上（query_for_context 的偏好段），
+        建了向量只会白白竞争 top_k 名额。
+
+        为什么收口成一个函数而不是在各处写 `if type is PREFERENCE`：合表后
+        「有没有向量」取决于 `type` 这个**可变**字段，散开写就会漏 —— 漏掉的
+        正是 edit() 只改 type 不改 content 的那条路径，两个方向都错（改成偏好
+        则旧向量残留、白占名额；改回普通记忆则永远没有向量、语义检索找不到）。
+        """
+        return type is not MemoryType.PREFERENCE
+
     async def store(
         self,
         channel_instance_id: str,
@@ -122,7 +136,12 @@ class MemoryService:
             entry.type = type
         entry.source = entry.edited()
 
-        if content_changed:
+        # 只改 type 也要重算：向量该不该存在由 _should_embed 决定，而它读的正是
+        # type。普通记忆改成偏好要删旧向量（否则残留向量白占 top_k
+        # 名额），偏好改回普通记忆要补建（它当初跳过了建索引，不补就永远只能
+        # 靠时间倒序回落偶然捞到）。
+        embed_changed = self._should_embed(entry.type) is not self._should_embed(old_type)
+        if content_changed or embed_changed:
             # 内容变了必须重算向量：旧向量对应旧文本，不重算就等于「按旧内容
             # 命中新条目」。重算失败时**删掉**旧向量而不是留着 —— 留着比没有
             # 更糟，检索会持续按已被改掉的内容命中它。
@@ -231,8 +250,11 @@ class MemoryService:
                 channel_instance_id, limit=min(top_k, FALLBACK_LIMIT)
             )
         prefs = await self._repo.list_preferences(channel_instance_id)
-        seen = {e.id for e in hits}
+        # 先切片再算 seen：反过来的话，被切掉那截里若有偏好，它的 id 已进 seen，
+        # 于是既不在候选里也不会被追加 —— 静默丢失。当前两条来源都不超过 top_k、
+        # 切片是空操作，但顺序不该依赖这个前提。
         hits = hits[:top_k]
+        seen = {e.id for e in hits}
         hits.extend(p for p in prefs if p.id not in seen)
         return hits
 
@@ -298,15 +320,13 @@ class MemoryService:
         entries = [await self._repo.get(eid) for eid in ids]
         # 过滤已被取代的、以及偏好：被取代条目在 supersede 时会撤向量，但撤向量
         # 失败只告警（_drop_vector 的取舍），残留向量仍会命中，这里兜一道，避免
-        # 过期事实靠一次失败的向量删除就流回上下文。偏好是「无条件全带」的固定
-        # 上下文、不参与 top_k 竞争，本不该有向量，但生产库可能残留合表前蒸馏写
-        # 下的 PREFERENCE 向量 —— 一并滤掉，否则它占着 top_k 名额还与偏好段重复。
+        # 过期事实靠一次失败的向量删除就流回上下文。
+        #
+        # 偏好按 `_should_embed` 本不该有向量，这里仍要滤：生产库可能残留合表前
+        # 蒸馏写下的 PREFERENCE 向量，或某次删向量失败的残留 —— 不滤的话它占着
+        # top_k 名额，还与偏好段重复。这是对向量库实际状态的兜底，不是判定。
         return [
-            e
-            for e in entries
-            if e is not None
-            and e.is_current
-            and e.type is not MemoryType.PREFERENCE
+            e for e in entries if e is not None and e.is_current and self._should_embed(e.type)
         ]
 
     async def list(
@@ -360,10 +380,10 @@ class MemoryService:
         失败时删掉旧向量并返回 None：见 edit() 里的说明 —— 留着旧向量会让
         检索按已被改掉的内容命中它，比没有索引更糟。
 
-        编辑后是偏好同样要删旧向量再返回：偏好不建向量（见 _embed_if_available），
-        直接 return 会留下「按被改掉的内容命中」的旧向量。
+        编辑后是偏好同样要删旧向量再返回（`_should_embed` 为假的分支）：偏好
+        不建向量，直接 return 会留下「按被改掉的内容命中」的旧向量。
         """
-        if entry.type is MemoryType.PREFERENCE:
+        if not self._should_embed(entry.type):
             await self._drop_vector(entry.id)
             return None
         if not self._vector_ready:
@@ -385,10 +405,10 @@ class MemoryService:
         两侧也在传，但没有任何代码写入它，于是
         scripts/cleanup_chat_memories.py 里 `embedding_ref IS NULL` 恒为真。
 
-        偏好跳过向量：偏好不走语义检索（检索时无条件全带），建了向量只会白白
-        竞争 top_k 名额。
+        偏好跳过向量：见 `_should_embed` —— 偏好不走语义检索（检索时无条件
+        全带），建了向量只会白白竞争 top_k 名额。
         """
-        if entry.type is MemoryType.PREFERENCE:
+        if not self._should_embed(entry.type):
             return
         if not self._vector_ready:
             return

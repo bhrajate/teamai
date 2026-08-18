@@ -51,7 +51,7 @@ Status: Draft v1.0
 │       │   ├── models/           # 领域模型（子包 __init__ 汇总导出）
 │       │   │   ├── channel.py    # ChannelInstance
 │       │   │   ├── task.py       # Task + TaskStatus 状态机
-│       │   │   ├── memory.py     # MemoryEntry / Preference
+│       │   │   ├── memory.py     # MemoryEntry（偏好是其 PREFERENCE 类型）
 │       │   │   ├── tag.py        # TagTemplate
 │       │   │   ├── policy.py     # PermissionPolicy / AmbientRule
 │       │   │   ├── budget.py     # BudgetQuota
@@ -95,7 +95,7 @@ Status: Draft v1.0
 │       │   ├── orm/              # 表定义按聚合分模块
 │       │   │   ├── task.py       # TaskModel
 │       │   │   ├── channel.py    # ChannelInstanceModel
-│       │   │   ├── memory.py     # MemoryEntryModel + PreferenceModel
+│       │   │   ├── memory.py     # MemoryEntryModel
 │       │   │   ├── tag.py        # TagTemplateModel
 │       │   │   ├── policy.py     # PolicyModel
 │       │   │   ├── budget.py     # BudgetQuotaModel
@@ -363,7 +363,7 @@ class MemoryRepository(ABC):
     async def query(self, channel_instance_id: str, query: str,
                     top_k: int) -> list[MemoryEntry]: ...
     @abstractmethod
-    async def set_preference(self, pref: Preference) -> None: ...
+    async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]: ...
 ```
 
 ### 4.6 adapters/ — 平台适配与连接器
