@@ -24,7 +24,7 @@ IMAGE      ?= teamai:latest
 
 # 目标名与同名目录/文件冲突时（如 config、tests），make 会以为已是最新而跳过
 .PHONY: help install lock sync lint fmt test test-cov check run-web run-worker migrate \
-	verify-longtask verify-longtask-db \
+	verify-longtask verify-longtask-db verify-outbox \
 	web-install web-dev web-build web-check \
         up down restart logs ps build image-run clean config
 
@@ -83,6 +83,9 @@ verify-longtask:  ## 冒烟验证长任务链路（需 make up 起 redis）
 
 verify-longtask-db:  ## 同上但用真 Container 入队，随后手动跑 make run-worker 看消费
 	$(PY) -m scripts.verify_long_task_flow --real-db
+
+verify-outbox:  ## 冒烟验证记忆投影链路：写入 → 入队 → 投影 → 回填（需 postgres + make migrate）
+	$(PY) -m scripts.verify_outbox_flow
 
 # ---------- 控制台前端 ----------
 # 需要 node ≥ 20。前端是独立静态站，构建产物在 web/dist/。

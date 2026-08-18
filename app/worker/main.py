@@ -19,7 +19,7 @@ import signal
 from datetime import timedelta
 
 from teamai.config import settings
-from teamai.container import Container, build_container, open_job_scope
+from teamai.container import Container, build_container, build_projector, open_job_scope
 from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload, ReplyTarget
 from teamai.infrastructure.db import init_db_or_warn
@@ -257,9 +257,25 @@ async def _main() -> None:
     register_jobs(container)
     scheduler.start()
     logger.info("Scheduler 已启动")
+
+    # 记忆向量投影：常驻 task，不是定时任务。它是链路的一部分而非周期性维护 ——
+    # 记忆写入只入队，向量要靠它补上，间隔越长「刚写入的记忆搜不到」的窗口越大
+    # （见 docs/plan-memory-outbox.md §5.4）。
+    projector_task = asyncio.create_task(build_projector(container).run_forever(stop))
+
     try:
         await run_worker(container, stop)
     finally:
+        # 先等投影器停：它可能正在一次 embed 往返里，给它机会收尾。超时就放弃 ——
+        # 租约会过期，那批记录下次启动时自动回到可取状态，不会丢。
+        try:
+            await asyncio.wait_for(projector_task, timeout=10)
+        except TimeoutError:
+            logger.warning("记忆投影器未在 10 秒内停止，放弃等待（租约会自动回收）")
+            projector_task.cancel()
+        except Exception as exc:  # pragma: no cover - 退出路径尽力而为
+            logger.warning(f"记忆投影器退出异常: {exc}")
+
         scheduler.shutdown()
         logger.info("Scheduler 已关闭")
         # 共享 Redis 连接池是长期存活的，须显式关闭

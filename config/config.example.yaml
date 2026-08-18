@@ -136,6 +136,22 @@ memory:
   # 窗口静置超过这么久也蒸馏，避免冷清频道的对话一直攒着不落地
   window_idle_seconds: 600
 
+# 记忆向量投影：worker 里的常驻循环，消费 memory_outbox 把向量写进向量库。
+# 记忆写入与「该重算向量」的意图同事务落库，向量由这个循环异步补上 ——
+# 所以「刚写入到能被语义检索」之间有个可观测的延迟（lag 指标）。
+# 设计见 docs/plan-memory-outbox.md。
+projector:
+  # 空转时的轮询间隔（秒）。取 2 秒而非分钟级：蒸馏刚提炼出一条结论，
+  # 紧接着的提问就该能命中它。
+  poll_interval_seconds: 2.0
+  # 一轮领取多少条
+  batch_size: 32
+  # 租约时长（秒）。必须显著大于单次 embedding 调用的最坏耗时，
+  # 提前过期会让另一个实例重复处理同一条（无害但白烧一次 embedding）。
+  lease_seconds: 300
+  # 重试几次后转死信。11 次的指数退避累计约 20 分钟（单次封顶 300 秒）。
+  max_attempts: 11
+
 # Agent 交互记录：存实际组装出的提示词、模型响应、分拆的 in/out token。
 # 补的是审计的缺口 —— audit_logs 只记动作枚举，还原不出「模型当时看到了什么」。
 interactions:

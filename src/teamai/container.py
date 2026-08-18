@@ -19,6 +19,7 @@ from teamai.application.intent import IntentClassifier
 from teamai.application.interaction import InteractionService
 from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
+from teamai.application.projector import MemoryProjector
 from teamai.application.router import MessageRouter
 from teamai.application.tag import TagResolver
 from teamai.config import settings
@@ -37,6 +38,7 @@ from teamai.domain.repositories import (
     ChannelRepository,
     InteractionRepository,
     MemoryRepository,
+    OutboxRepository,
     PolicyRepository,
     TagRepository,
     TaskRepository,
@@ -301,6 +303,14 @@ class JobScope:
     orchestrator: TaskOrchestrator
     distiller: MemoryDistiller
     interactions: InteractionService
+    # 投影器要的两个仓储。它不走服务层 —— 投影是「把权威状态同步到派生索引」，
+    # 没有业务规则可言，多一层只是多一层转发。
+    #
+    # ⚠️ MemoryProjector 不在这里：它收一个 scope 工厂，每轮自己开一个新 scope
+    # （见它的类文档）。放进来就会让它绑死在某一个 session 上，而它的循环是
+    # 长期存活的。
+    outbox_repo: OutboxRepository
+    memory_repo: MemoryRepository
 
 
 @asynccontextmanager
@@ -354,9 +364,29 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
                 SQLInteractionRepository(session),
                 retention_days=settings.interactions_retention_days,
             ),
+            outbox_repo=SQLOutboxRepository(session, dialect=_dialect()),
+            memory_repo=SQLMemoryRepository(session),
         )
     finally:
         await session.close()
+
+
+def build_projector(container: Container) -> MemoryProjector:
+    """装配记忆向量投影器。
+
+    传的是 `open_job_scope` 的偏应用，不是某个 scope 实例 —— 投影器每轮自己开
+    一个新 session（理由见 MemoryProjector 的类文档）。它因此不属于 JobScope，
+    而是与容器同寿、由 worker 起一个常驻 task 驱动。
+    """
+    return MemoryProjector(
+        lambda: open_job_scope(container),
+        container.vector_store,
+        container.embedder,
+        batch_size=settings.projector_batch_size,
+        lease_seconds=settings.projector_lease_seconds,
+        max_attempts=settings.projector_max_attempts,
+        poll_interval_seconds=settings.projector_poll_interval_seconds,
+    )
 
 
 _container: Container | None = None

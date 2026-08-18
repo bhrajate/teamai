@@ -142,6 +142,20 @@ class Settings(BaseSettings):
     # 窗口静置超过这么久也蒸馏，避免冷清频道的对话一直攒着不落地
     memory_window_idle_seconds: int = 600
 
+    # projector.*（记忆向量投影：消费 memory_outbox，见 docs/plan-memory-outbox.md）
+    # 空转时的轮询间隔。取 2 秒而非分钟级：「刚写入的记忆搜不到」在同一个会话里
+    # 就会被察觉 —— 蒸馏刚提炼出一条结论，紧接着的提问就该能命中它。
+    projector_poll_interval_seconds: float = 2.0
+    # 一轮领取多少条。逐条 embed（批量接口能省往返，但一条失败会牵连整批的重试
+    # 语义，而当前写入量是每 10 分钟一轮蒸馏、一次几条，不值得为此复杂化）。
+    projector_batch_size: int = 32
+    # 租约时长。必须显著大于单次 embed 的最坏耗时 —— 租约提前过期会让另一个
+    # 实例重复处理同一条（无害但白烧一次 embedding）。
+    projector_lease_seconds: int = 300
+    # 重试几次后转死信。11 次的指数退避累计约 20 分钟（封顶 300 秒/次），
+    # 足够熬过多数 embedding 限流窗口；再失败就该有人看告警了。
+    projector_max_attempts: int = 11
+
     # interactions.*（Agent 交互记录：提示词与响应全文）
     # 保留期。<= 0 表示不清理（留给「合规要求永久留存」的部署）。
     # 这张表含提示词与响应全文，不清理会无限增长 —— 既是存储负担，

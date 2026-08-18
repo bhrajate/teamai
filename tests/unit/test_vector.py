@@ -1,7 +1,18 @@
-"""向量库适配器：内存实现的语义 + Qdrant 调用形态。
+"""向量库适配器：Qdrant 调用形态 + 读写两种相反的降级取向。
+
+⚠️ 本文件曾有一整段「内存实现」用例。`_InMemoryVectorStore` 已被删除（见
+`infrastructure/vector.py` 里那段注释），因为它制造假成功：向量写进进程内存、
+重启即蒸发，而 `upsert` 返回非空值使 `embedding_ref` 被填上，那一行看起来已建
+索引。别再把它加回来，也别把这些用例恢复。
+
+现在的契约是**读写降级方向相反**：
+- 写（upsert/delete）失败**抛异常** —— projector 靠它决定退避重试。吞掉就等于
+  丢掉那次投影，而 outbox 记录会被当成成功而删除，向量永久缺失。
+- 读（query）失败**返回空** —— 由 MemoryService 回落到时间倒序。检索失败只影响
+  单次回答质量，不影响数据。
 
 Qdrant 部分不连真服务，而是用假 client 断言**传给 SDK 的参数形态**。这样做是
-因为本次修的两个缺陷都恰好是「形态不对但不报错/报错被吞」：
+因为此前修的两个缺陷都恰好是「形态不对但不报错/报错被吞」：
 
 1. `upload_points` 的 points 必须是 `PointStruct` 而非 dict。改造前传的是 dict，
    SDK 会抛 `AttributeError: 'dict' object has no attribute 'id'`，而调用方
@@ -21,54 +32,11 @@ import uuid
 import pytest
 
 from teamai.domain.models import MemoryEntry
-from teamai.infrastructure.vector import QdrantVectorStore, _InMemoryVectorStore
+from teamai.infrastructure.vector import QdrantVectorStore
 
 
 def _entry(eid: str = "mem_1", channel: str = "ch_1", content: str = "某事实") -> MemoryEntry:
     return MemoryEntry(id=eid, channel_instance_id=channel, content=content)
-
-
-# ===== 内存实现（也是 Qdrant 不可用时的降级路径）=====
-
-
-async def test_内存实现写入后可检索() -> None:
-    store = _InMemoryVectorStore()
-
-    ref = await store.upsert(_entry("mem_1"), [1.0, 0.0, 0.0])
-
-    assert ref == "mem_1", "须返回可回填 embedding_ref 的引用"
-    assert await store.query("ch_1", [1.0, 0.0, 0.0], 5) == ["mem_1"]
-
-
-async def test_内存实现删除后不再命中() -> None:
-    store = _InMemoryVectorStore()
-    await store.upsert(_entry("mem_1"), [1.0, 0.0, 0.0])
-    await store.upsert(_entry("mem_2"), [0.0, 1.0, 0.0])
-
-    await store.delete("mem_1")
-
-    assert await store.query("ch_1", [1.0, 0.0, 0.0], 5) == ["mem_2"]
-
-
-async def test_内存实现删除不存在的id不报错() -> None:
-    await _InMemoryVectorStore().delete("mem_missing")
-
-
-async def test_内存实现按频道隔离() -> None:
-    store = _InMemoryVectorStore()
-    await store.upsert(_entry("mem_a", channel="ch_A"), [1.0, 0.0, 0.0])
-    await store.upsert(_entry("mem_b", channel="ch_B"), [1.0, 0.0, 0.0])
-
-    assert await store.query("ch_B", [1.0, 0.0, 0.0], 5) == ["mem_b"]
-
-
-async def test_同id重复写入是覆盖而非堆积() -> None:
-    store = _InMemoryVectorStore()
-    await store.upsert(_entry("mem_1"), [1.0, 0.0, 0.0])
-    await store.upsert(_entry("mem_1"), [0.0, 1.0, 0.0])
-
-    assert await store.query("ch_1", [0.0, 1.0, 0.0], 5) == ["mem_1"]
-    assert len(await store.query("ch_1", [1.0, 1.0, 0.0], 5)) == 1
 
 
 # ===== Qdrant 调用形态 =====
@@ -146,18 +114,40 @@ async def test_delete按entry_id过滤而非按point_id(qdrant) -> None:
     assert condition.match.value == "mem_1"
 
 
-async def test_client不可用时降级到内存实现() -> None:
-    """QdrantVectorStore 在连不上时不该让调用方感知，写入/删除都走内存兜底。"""
+# ===== 不可用时的降级：写抛、读返空 =====
+
+
+@pytest.fixture
+def unavailable() -> QdrantVectorStore:
+    """连不上 Qdrant 的 store。"""
     store = QdrantVectorStore(collection="test-col", dimensions=3)
 
     async def _fail() -> None:
         store._client = None
 
     store._ensure_client = _fail  # type: ignore[method-assign]
+    return store
 
-    ref = await store.upsert(_entry("mem_1"), [1.0, 0.0, 0.0])
-    assert ref == "mem_1"
-    assert await store.query("ch_1", [1.0, 0.0, 0.0], 5) == ["mem_1"]
 
-    await store.delete("mem_1")
-    assert await store.query("ch_1", [1.0, 0.0, 0.0], 5) == []
+async def test_不可用时upsert抛异常(unavailable: QdrantVectorStore) -> None:
+    """必须抛：projector 靠异常决定退避重试。
+
+    改造前这里降级到进程内存字典并返回非空引用 —— 于是那一行看起来已建索引，
+    而向量在重启后蒸发，且任何基于 `embedding_ref IS NULL` 的补齐都会跳过它。
+    """
+    with pytest.raises(ConnectionError, match="Qdrant 不可用"):
+        await unavailable.upsert(_entry("mem_1"), [1.0, 0.0, 0.0])
+
+
+async def test_不可用时delete抛异常(unavailable: QdrantVectorStore) -> None:
+    with pytest.raises(ConnectionError, match="Qdrant 不可用"):
+        await unavailable.delete("mem_1")
+
+
+async def test_不可用时query返回空而不抛(unavailable: QdrantVectorStore) -> None:
+    """读路径取向与写相反：检索失败只影响单次回答质量，回落到时间倒序即可。
+
+    这条与上面两条一起，锁住「读写降级方向相反」这个刻意的不对称 —— 少了它，
+    后来者很可能为了「一致」把 query 也改成抛，那会让向量库故障直接变成回答失败。
+    """
+    assert await unavailable.query("ch_1", [1.0, 0.0, 0.0], 5) == []
