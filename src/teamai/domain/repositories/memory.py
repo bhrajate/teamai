@@ -56,6 +56,36 @@ class MemoryRepository(ABC):
     async def delete(self, entry_id: str) -> None: ...
 
     @abstractmethod
+    async def find_vector_drift(self, limit: int) -> tuple[list[str], list[str]]:
+        """找出向量状态与记忆状态不符的行，返回 (需补建的 id, 需撤除的 id)。
+
+        判据是 `MemoryEntry.should_embed()` 的 SQL 等价形式，逐字对应
+        `docs/plan-memory-outbox.md` §5.1 的不变量：
+
+        - **需补建**：`type != PREFERENCE` 且未被取代，而 `embedding_ref` 为空
+          或 `embedded_hash` 与当前 content 的 md5 不符。后半句覆盖「编辑过但
+          向量没重算」—— 只看 `embedding_ref IS NULL` 判不出这种内容漂移。
+        - **需撤除**：偏好或已被取代，却仍有 `embedding_ref`。
+
+        ⚠️ 这两个谓词必须与 `should_embed()` 保持等价。它们分叉时不会报错 ——
+        只会让对账与投影互相拆台（一方判「该有向量」不断入队，另一方判「不该有」
+        不断删掉），症状是烧钱的死循环。`tests/unit/test_reconciler.py` 穷举了
+        type × superseded 的组合来核对这件事。
+
+        为什么放在仓储而不是让对账服务自己写 SQL：`md5()` 的方言差异、以及
+        「哪几列参与判断」都是持久化细节，application 层不该知道。此前对账服务
+        直接 import 了 `infrastructure.orm`，被分层测试拦住 —— 那个拦得对。
+
+        两个方向合成一个方法而不是两个：它们是同一个不变量的两侧，分开声明会让
+        「改了一侧忘了另一侧」变得容易。
+
+        `limit` 分别作用于两个方向（各取至多 limit 条）。有上界是因为首次上线时
+        存量偏差可能成千上万，一次全塞进 outbox 会让 lag 指标瞬间爆表、且挤掉
+        正常写入的投影。
+        """
+        ...
+
+    @abstractmethod
     async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
         """列该频道的现行偏好（type='PREFERENCE' 且未被取代），按 created_at 倒序。
 

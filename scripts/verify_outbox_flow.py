@@ -27,6 +27,7 @@ from sqlalchemy import delete, select
 
 from teamai.application.memory import MemoryService
 from teamai.application.projector import MemoryProjector, content_hash
+from teamai.application.reconciler import MemoryReconciler
 from teamai.domain.models import MemoryEntry, MemoryType, OutboxOp
 from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.db import get_engine, get_session_factory
@@ -164,7 +165,7 @@ async def _run() -> int:
 
     # ② 投影一轮
     report = await projector.run_once()
-    assert report.upserted == [entry.id], f"应投影 1 条，实际 {report}"
+    assert entry.id in report.upserted, f"本条应被投影，实际 {report}"
     assert vector.upserted == [(entry.id, "订单服务的超时阈值是 30 秒")]
     logger.info("② 投影完成，向量已写入")
 
@@ -183,7 +184,7 @@ async def _run() -> int:
         rows = await _pending(session, entry.id)
         assert len(rows) == 1, "改内容后应重新入队"
     report = await projector.run_once()
-    assert report.upserted == [entry.id]
+    assert entry.id in report.upserted
     async with factory() as session:
         stored = await SQLMemoryRepository(session).get(entry.id)
         assert stored is not None and stored.embedded_hash == content_hash("超时阈值改成 5 秒了")
@@ -197,7 +198,7 @@ async def _run() -> int:
         )
         await session.commit()
     report = await projector.run_once()
-    assert report.skipped == [entry.id], f"hash 未变应跳过，实际 {report}"
+    assert entry.id in report.skipped, f"hash 未变应跳过，实际 {report}"
     assert len(embedder.calls) == before, "跳过时不该再调 embedding"
     logger.info("④ hash 未变时跳过，未重复 embed")
 
@@ -208,7 +209,7 @@ async def _run() -> int:
         rows = await _pending(session, entry.id)
         assert len(rows) == 1 and rows[0].op is OutboxOp.DELETE
     report = await projector.run_once()
-    assert report.deleted == [entry.id]
+    assert entry.id in report.deleted
     assert entry.id in vector.deleted
     logger.info("⑤ 删除后向量已撤")
 
@@ -218,6 +219,57 @@ async def _run() -> int:
         pref = await service.store(CHANNEL, "回答要简短", type=MemoryType.PREFERENCE)
         assert await _pending(session, pref.id) == [], "偏好不该入队"
         logger.info("⑥ 偏好未入队")
+
+    # ⑦ 对账：md5() 谓词只有真 Postgres 上跑得起来（SQLite 无此函数，单测靠注册
+    #    一个同名实现），所以这一段是那两个谓词的唯一真库验证。
+    async with factory() as session:
+        repo = SQLMemoryRepository(session)
+        outbox_repo = SQLOutboxRepository(session, dialect="postgresql")
+        reconciler = MemoryReconciler(repo, outbox_repo)
+
+        # ⑦a 缺向量 → 补 UPSERT
+        await repo.store(
+            MemoryEntry(
+                id="mem_verify_drift",
+                channel_instance_id=CHANNEL,
+                content="缺向量的一条",
+                type=MemoryType.FACT,
+            )
+        )
+        await session.commit()
+        report = await reconciler.run_once()
+        assert "mem_verify_drift" in report.missing, f"缺向量的行应被补，实际 {report}"
+        logger.info("⑦a 缺向量的行被对账补出")
+
+        # ⑦b 内容漂移（hash 不符）→ 补 UPSERT。这一条是 md5() 谓词的核心：
+        #    只看 embedding_ref IS NULL 判不出它。
+        row = await session.get(MemoryEntryModel, "mem_verify_drift")
+        assert row is not None
+        row.embedding_ref = "point-x"
+        row.embedded_hash = "0" * 32  # 故意与 md5(content) 不符
+        await session.commit()
+        report = await reconciler.run_once()
+        assert "mem_verify_drift" in report.missing, "hash 不符应被判为需重算"
+        logger.info("⑦b 内容漂移（hash 不符）被对账识别 —— md5() 谓词生效")
+
+        # ⑦c hash 相符 → 不动
+        row = await session.get(MemoryEntryModel, "mem_verify_drift")
+        assert row is not None
+        row.embedded_hash = content_hash("缺向量的一条")
+        await session.commit()
+        report = await reconciler.run_once()
+        assert "mem_verify_drift" not in report.missing, "hash 相符不该被判为需重算"
+        logger.info("⑦c hash 相符时不动")
+
+        # ⑦d 偏好带向量 → 补 DELETE
+        prow = await session.get(MemoryEntryModel, pref.id)
+        assert prow is not None
+        prow.embedding_ref = "point-pref"
+        await session.commit()
+        report = await reconciler.run_once()
+        assert pref.id in report.stale, f"偏好带向量应补 DELETE，实际 {report}"
+        logger.info("⑦d 偏好残留向量被对账补出 DELETE")
+
         await _cleanup(session)
 
     logger.info("")

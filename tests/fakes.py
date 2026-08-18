@@ -226,6 +226,28 @@ class FakeMemoryRepository(MemoryRepository):
     async def delete(self, entry_id: str) -> None:
         self.stored = [e for e in self.stored if e.id != entry_id]
 
+    async def find_vector_drift(self, limit: int) -> tuple[list[str], list[str]]:
+        """按 should_embed 的语义在内存里判，与 SQL 谓词等价。
+
+        替身这里用 `MemoryEntry.should_embed()` 本身，而 SQL 实现是它的等价改写
+        —— 两者是否真的等价由 tests/unit/test_reconciler.py 打真 SQL（注册了
+        md5 的 SQLite）穷举 type × superseded 组合来核对，不靠这个替身。
+
+        `content_hash` 从 application 层 import 是刻意的：它就是 SQL 里 `md5()`
+        的那份实现，替身若自己算一遍哈希，「两边一致」这个前提就没被测到。
+        """
+        from teamai.application.projector import content_hash
+
+        rows = sorted(self.stored, key=lambda e: e.created_at)
+        missing = [
+            e.id
+            for e in rows
+            if e.should_embed()
+            and (e.embedding_ref is None or e.embedded_hash != content_hash(e.content))
+        ][:limit]
+        stale = [e.id for e in rows if not e.should_embed() and e.embedding_ref is not None][:limit]
+        return missing, stale
+
     async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
         out = [
             e

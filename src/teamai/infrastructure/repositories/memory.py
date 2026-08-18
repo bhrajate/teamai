@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teamai.domain.models.memory import MemoryEntry, MemoryType
@@ -108,6 +108,49 @@ class SQLMemoryRepository(MemoryRepository):
         if m:
             await self._session.delete(m)
             await self._session.flush()
+
+    async def find_vector_drift(self, limit: int) -> tuple[list[str], list[str]]:
+        """见 MemoryRepository.find_vector_drift 的契约说明。
+
+        ⚠️ `md5()` 是 Postgres 内置函数，SQLite 没有。单测给 SQLite 连接注册了
+        一个同名实现（`tests/unit/test_reconciler.py`），端到端在真 Postgres 上
+        由 `scripts/verify_outbox_flow.py` 验。
+
+        `md5()` 按数据库编码算，而 `projector.content_hash()` 按 UTF-8 算 ——
+        两者一致的前提是库是 UTF-8（本项目的 Postgres 镜像默认如此）。若部署到
+        非 UTF-8 的库，对账会把所有行判成「需重算」，症状是补出的条数持续等于
+        总行数。
+        """
+        missing_stmt = (
+            select(MemoryEntryModel.id)
+            .where(
+                MemoryEntryModel.type != MemoryType.PREFERENCE,
+                MemoryEntryModel.superseded_by.is_(None),
+                or_(
+                    MemoryEntryModel.embedding_ref.is_(None),
+                    MemoryEntryModel.embedded_hash.is_distinct_from(
+                        func.md5(MemoryEntryModel.content)
+                    ),
+                ),
+            )
+            .order_by(MemoryEntryModel.created_at)
+            .limit(limit)
+        )
+        stale_stmt = (
+            select(MemoryEntryModel.id)
+            .where(
+                or_(
+                    MemoryEntryModel.type == MemoryType.PREFERENCE,
+                    MemoryEntryModel.superseded_by.is_not(None),
+                ),
+                MemoryEntryModel.embedding_ref.is_not(None),
+            )
+            .order_by(MemoryEntryModel.created_at)
+            .limit(limit)
+        )
+        missing = list((await self._session.execute(missing_stmt)).scalars().all())
+        stale = list((await self._session.execute(stale_stmt)).scalars().all())
+        return missing, stale
 
     async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
         """该频道现行偏好：type='PREFERENCE' 且未被取代，按 created_at 倒序。

@@ -20,6 +20,7 @@ from teamai.application.interaction import InteractionService
 from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.projector import MemoryProjector
+from teamai.application.reconciler import MemoryReconciler
 from teamai.application.router import MessageRouter
 from teamai.application.tag import TagResolver
 from teamai.config import settings
@@ -303,6 +304,7 @@ class JobScope:
     orchestrator: TaskOrchestrator
     distiller: MemoryDistiller
     interactions: InteractionService
+    reconciler: MemoryReconciler
     # 投影器要的两个仓储。它不走服务层 —— 投影是「把权威状态同步到派生索引」，
     # 没有业务规则可言，多一层只是多一层转发。
     #
@@ -366,6 +368,10 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
             ),
             outbox_repo=SQLOutboxRepository(session, dialect=_dialect()),
             memory_repo=SQLMemoryRepository(session),
+            reconciler=MemoryReconciler(
+                SQLMemoryRepository(session),
+                SQLOutboxRepository(session, dialect=_dialect()),
+            ),
         )
     finally:
         await session.close()

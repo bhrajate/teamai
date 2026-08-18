@@ -186,6 +186,29 @@ async def distill_memories(container: Container) -> None:
         logger.error(f"记忆蒸馏失败: {exc}")
 
 
+async def reconcile_memory_vectors(container: Container) -> None:
+    """记忆向量对账：把「向量状态与记忆状态不符」的行重新入队。
+
+    这是投影链路的安全网。outbox 保证「我发出的意图最终会执行」，不保证「执行
+    结果后来没被别人改掉」—— 向量库被重建、误删、恢复到旧时点，以及本方案上线前
+    的存量偏差，都只有对账能发现（见 application/reconciler.py 的模块说明）。
+
+    ⚠️ **长期补出 0 条才是正常。** 持续非零说明 projector 在漏活，而不是对账在
+    干活。所以这里补出非零时记 warning 而非 info —— 它该引起注意。
+    """
+    try:
+        async with open_job_scope(container) as scope:
+            report = await scope.reconciler.run_once()
+        if report.total:
+            logger.warning(
+                f"记忆向量对账补了 {report.total} 条"
+                f"（缺失/过期 {len(report.missing)}、残留 {len(report.stale)}）—— "
+                f"长期非零说明投影在漏活，值得排查"
+            )
+    except Exception as exc:
+        logger.error(f"记忆向量对账失败: {exc}")
+
+
 async def purge_expired_interactions(container: Container) -> None:
     """交互记录保留期清理。
 
@@ -232,6 +255,11 @@ def register_jobs(container: Container) -> None:
         minutes=interval,
         coro=functools.partial(distill_memories, container),
     )
+    scheduler.add_interval(
+        "memory-vector-reconcile",
+        minutes=interval,
+        coro=functools.partial(reconcile_memory_vectors, container),
+    )
     purge_interval = settings.jobs_purge_interval_minutes
     scheduler.add_interval(
         "interaction-purge",
@@ -239,7 +267,7 @@ def register_jobs(container: Container) -> None:
         coro=functools.partial(purge_expired_interactions, container),
     )
     logger.info(
-        f"已注册定时任务: 预算周期重置 / 超时巡检 / 记忆蒸馏，每 {interval} 分钟；"
+        f"已注册定时任务: 预算周期重置 / 超时巡检 / 记忆蒸馏 / 向量对账，每 {interval} 分钟；"
         f"交互记录清理，每 {purge_interval} 分钟"
     )
 
