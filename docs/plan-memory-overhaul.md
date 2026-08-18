@@ -93,7 +93,15 @@ Created: 2026-08-16
 
 **留一条后路**:若 Phase 4 之后真出现「单条记忆需人工限制外传」的需求,那时新加一个语义明确、只由人工设置的字段(如 `share_scope`),而不是复用这个半成品。
 
-## 3. Phase 2:Qdrant → pgvector
+## 3. Phase 2:Qdrant → pgvector ❌ 已被取代,不要实施
+
+**本节已由 `plan-memory-outbox.md` 取代。** 2026-08-18 重新评估后改为保留 Qdrant,用 transactional outbox + 异步投影解决双写不一致。
+
+改主意的理由不是本节的判断错了 —— 它在「消除双写不一致」这个目标上仍然成立,而且更省代码。是它同时放弃了一批与规模无关、现在就能拿到的解耦收益:换 embedding 模型不停机(`vector(N)` 的 N 定了就定了,`config.py` 的 `embedding_dimensions` 在合表方案下是**假可配**)、向量不进 WAL/备份/副本、建索引不与 OLTP 抢 `maintenance_work_mem`、embedder 限流不再静默丢向量、控制台写入不同步等 embedding API。完整对比见 `plan-memory-outbox.md` §4.3。
+
+**本节仍有价值的部分是那组规模测算,但其中一个数字实测是错的**:「顺序扫 36000 行约 28ms」,实测 **206ms**,低了约 7 倍 —— 估算按裸内存带宽算,漏了 detoast 的取页开销(1536 维向量 6148 字节,超过 TOAST 阈值故行外存储)。若将来因为规模或运维偏好回到 pgvector 方案,用 `plan-memory-outbox.md` §4.2 那组实测数据,不要用本节的估算。
+
+以下原文保留,仅供追溯当时的推理。
 
 **依赖与部署**:`pyproject.toml` 去 `qdrant-client`、加 `pgvector`;`deploy/docker-compose.yml` 的 `postgres:16` 换 `pgvector/pgvector:pg16`,删掉 qdrant service(`:41`)与 `qdrant_data` 卷(`:50`);`config.py` 去 `qdrant_url`/`qdrant_collection`。
 
@@ -128,6 +136,8 @@ Created: 2026-08-16
 **正确性属性要改写**:`Design-claude-tag.md §5` 的频道隔离不变量与 §7.4 的隔离性安全测试,当前表述是「仅访问 ch_A 的数据」,需改成带条件的版本,测试同步重写。
 
 ## 6. 顺序与理由
+
+⚠️ 本节写于 Phase 2 还是 pgvector 方案的时候。Phase 2 已被 `plan-memory-outbox.md` 取代(见 §3 开头),故下面关于「Phase 2 必须在 Phase 4 之前」的论证要重读:那条理由(否则跨频道过滤要在 Qdrant payload 上写一遍、迁移后再写一遍)在保留 Qdrant 之后**不再成立**,反而变成 Phase 4 的一项已知代价 —— 跨频道过滤只能在 payload 上做,加过滤维度要重灌 point。
 
 Phase 1 → Phase 2 → Phase 3 → Phase 4。
 

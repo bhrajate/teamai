@@ -22,8 +22,13 @@
 
 判定条件（三者同时满足才算碎片）：
 - `type == BACKGROUND_KNOWLEDGE` —— 蒸馏产出的 DECISION / FACT / PREFERENCE 不碰；
-- 内容长度 < `--max-length`（默认 25）—— 真正的背景知识很少这么短；
-- `embedding_ref IS NULL` —— 有向量引用的是经过正规写入路径的，留着。
+- 内容长度 < `--max-length`（默认 25）—— 真正的背景知识很少这么短。
+
+⚠️ 曾经还有第三条判据 `embedding_ref IS NULL`（「有向量引用的是经过正规写入路径
+的，留着」）。它已被删除：改造为 outbox + 异步投影之后，「没有向量」只表示投影还
+没追上（暂态），不再表示「非正规路径写入」。留着它会让刚写入、投影未完成的正常
+记忆被误判成碎片而删掉 —— 而那个窗口只有几秒，dry-run 时未必看得见，正是最难排查
+的一类错误。
 
 ⚠️ `--apply` 会真的删行且不可恢复。建议先跑 dry-run 看抽样，必要时先备份：
     pg_dump -t memory_entries ... > memory_entries.sql
@@ -64,7 +69,8 @@ def _conditions(max_length: int, channel: str | None):
     conds = [
         MemoryEntryModel.type == MemoryType.BACKGROUND_KNOWLEDGE,
         func.length(MemoryEntryModel.content) < max_length,
-        MemoryEntryModel.embedding_ref.is_(None),
+        # 不再判 embedding_ref：改造后「没有向量」是暂态（投影未追上），
+        # 不再表示「非正规路径写入」。理由见模块文档。
     ]
     if channel:
         conds.append(MemoryEntryModel.channel_instance_id == channel)
@@ -118,8 +124,14 @@ async def _run(max_length: int, channel: str | None, apply: bool) -> int:
         deleted = int(result.rowcount or 0)
         logger.warning(f"已删除 {deleted} 条聊天碎片")
         logger.info(
-            "提示：Qdrant 里的向量不受影响（这些行本就没有 embedding_ref）。"
-            "若曾用其他方式写过向量，需要另行重建索引。"
+            "提示：这些行的向量不会被自动清除 —— 本脚本直接打 SQL，不走 "
+            "MemoryService，故不会入队 DELETE。残留向量会在检索时因取不到实体而被"
+            "过滤（不泄露内容），但白占 top_k 名额。"
+        )
+        logger.info(
+            "对账（memory-vector-reconcile 定时任务）也查不出这些残留：它按"
+            "「行存在但不该有向量」判断，而这些行已经不存在了。需要时手动清理 "
+            "Qdrant，或删除整个集合后跑 scripts/rebuild_memory_vectors.py --apply。"
         )
         return deleted
 

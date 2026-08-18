@@ -169,6 +169,35 @@
    - 降级方向是「少标」而非「错标」：身份未知时 `is_self` 一律为假，自己的回复退化成普通参与者。错标会把别人的话认领成自己的，那让模型的自我认知出错。别的机器人不单独标记，按普通参与者渲染
    - 新增 `tests/unit/test_thread_readers.py`（20 条）—— 两个读取器此前完全没有测试，这正是缺陷能活下来的原因。验证过守卫有效：临时改回旧判定，Slack 侧 3 条、飞书侧 2 条立刻变红
 
+- [x] 21. 记忆写入改为 transactional outbox + 异步投影（设计见 `docs/plan-memory-outbox.md`）
+   - 定性问题：`memory_entries` 是权威源、Qdrant 只存向量，两者由应用层同步双写且无事务保护，失败只打 warning。项目**没有任何对账机制**，所以偏差只会静默累积。九个确认缺陷见设计文档 §2，其中六个是双写窗口
+   - 这些缺陷此前一直被掩盖：按 `vector.py` 与 `memory.py` 的注释，向量路径因 embedder 从未注入而根本没运行过。任务 17/18 修完注入与形态问题，等于刚把它们激活
+   - 最隐蔽的一个（设计文档缺陷 7）：Qdrant 不可用时降级到 `_InMemoryVectorStore`，而它的 `upsert` 返回非空值使 `embedding_ref` 被填上 —— 那一行**看起来已建索引**，任何基于 `embedding_ref IS NULL` 的补齐都会跳过它；向量其实在进程内存里，重启即蒸发，且 web 与 worker 各持一份互不可见。已删除，源码与测试都留了「别再加回来」的注释
+   - 方案选择：`plan-memory-overhaul.md` §3 原定合表到 pgvector，重新评估后改为保留 Qdrant + outbox。**不是因为性能** —— 实测 300k 行（按测算是十年量）带频道过滤的 HNSW 检索是 0.3ms，pgvector 完全够用。理由是那些与规模无关的解耦收益：换 embedding 模型不停机（`vector(N)` 的 N 定了就定了，`embedding_dimensions` 在合表方案下是假可配）、向量不进 WAL/备份/副本、建索引不与 OLTP 抢内存、embedder 限流不再静默丢向量、控制台写入不同步等 embedding API。完整对比见设计文档 §4.3
+   - 顺带更正 `plan-memory-overhaul.md` §1 的一处估算：「顺序扫 36000 行约 28ms」实测 **206ms**，低约 7 倍 —— 估算按裸内存带宽算，漏了 detoast 取页（1536 维向量 6148 字节，超 TOAST 阈值故行外存储，`attstorage='e'`：行外但不压缩）
+   - **UnitOfWork（可重入）**：九个仓储原先各自 `commit()`，于是「写记忆」与「记下该建向量的意图」是两次独立提交。改为仓储只 `flush()`、边界由用例层声明。可重入是必须的 —— `supersede()` 内部调 `store()`，不可重入的实现会在内层就提交掉半个操作（新条目已落库、旧条目还没标记被取代，那一瞬间同一事实有两条并列）
+   - **投影决策纯状态式**：projector 只回读 `memory_entries` 的当前状态，**不看 outbox 记录里的 `op`**。按 `op` 行事会让滞后的 UPSERT 拿旧内容覆盖新向量，而 edit/supersede 让同一条记忆短时间内变化多次 —— 这种滞后是常态而非例外。决策表的每条用例都参数化了 op 来锁这件事
+   - **`embedded_hash` 与 `embedding_ref` 必须并存**：前者答「向量是按哪份内容建的」，后者答「向量存不存在」。只看 ref 判不出内容漂移，只看 hash 判不出向量丢失。⚠️ 这个字段在 mapper 两侧都要加 —— 漏在 mapper 的后果特别隐蔽：projector 回填了值但存不进库，于是每轮对账都判 hash 不符而重新 embed，向量始终是对的、检索正常，只有账单会暴露
+   - **对账是安全网，不是常态路径**：outbox 保证「我发出的意图最终会执行」，不保证「执行结果后来没被别人改掉」。三类它覆盖不到的情况只有对账能发现（上线前的存量偏差、projector 自身 bug 与人工重置的死信、向量库被外部改动如重建集合或恢复到旧时点）。故 `teamai_memory_reconcile_total` 长期为 0 才正常，持续非零说明投影在漏活
+   - 对账的两个 SQL 谓词必须与 `should_embed()` 等价，分叉时不报错、只会让对账与投影互相拆台（一方判「该有向量」不断入队，另一方判「不该有」不断删），症状是烧钱的死循环。`test_reconciler.py` 穷举 type × superseded 八种组合逐一核对，并加自检确认两个维度的真假两侧都覆盖到
+   - 谓词初版写在 application 层并 import 了 `infrastructure.orm`，被 `test_layering` 拦住 —— 拦得对，`md5()` 的方言差异是持久化细节。下沉为 `MemoryRepository.find_vector_drift()`
+   - `md5()` 是 Postgres 内置函数，SQLite 没有：单测给 SQLite 连接**注册一个同名实现**（与 projector 的 `content_hash` 同一份 hashlib.md5），于是谓词本身能在单测里验；另加自检确认注册的 md5 与 content_hash 一致，否则所有关于 hash 的断言都在测假前提
+   - **`VectorStore` 契约反转**：写（upsert/delete）失败改为**抛异常**，projector 靠它决定退避重试；读（query）仍返回空、回落到时间倒序。读写降级方向相反是刻意的（检索失败只影响单次回答质量，写失败会丢数据），专门有一条用例锁这个不对称，免得后来者为了「一致」把 query 也改成抛
+   - **指标是本项目第一个可观测面**（改造前 prometheus / `/metrics` / `Counter(` 全部零命中）。走 `MetricsSink` 端口 —— 上报点在 application 而 prometheus_client 在 infrastructure，不许直接依赖。六个指标：outbox 的 pending/dead/lag，投影的 projected_total/embed_seconds，对账的 reconcile_total
+   - 实测发现的部署约束：`PROMETHEUS_MULTIPROC_DIR` 必须在 **import 指标模块之前**就已设好 —— prometheus_client 在建 Gauge 那一刻决定写 mmap 还是纯进程内，之后 setenv 无效，表现是 `/metrics` 返回 200 而 body 为空。第一版测试就栽在这里。已写进模块文档与 `.env.example`，真实路径由子进程用例端到端验
+   - Gauge 用 `multiprocess_mode='liveall'`：默认的 'all' 会把每个进程的样本各自暴露成带 pid 标签的序列，对「队列里还剩多少条」这种全局量是错的。worker 退出时 `mark_process_exit()` 清本进程样本，不清的话重启后旧 pid 的值继续被暴露，表现是「投影明明停了 lag 却不涨」
+   - 退避取 11 次而非 8：设计文档初版写「8 次约覆盖 10 分钟」，两处都错 —— 8 次累计 255 秒 ≈ 4.2 分钟，且 300 秒封顶在 8 次内永远撞不到（2^7=128<300），那个上限等于没生效
+   - `scripts/cleanup_chat_memories.py` 去掉 `embedding_ref IS NULL` 判据：改造后「没有向量」是暂态（投影未追上），留着会让刚写入的正常记忆被误判成碎片删掉，而那个窗口只有几秒、dry-run 未必看得见
+   - 新增 `scripts/rebuild_memory_vectors.py`（默认 dry-run）：对账查不出的两类情况需要它 —— 换了 embedding 模型（标记全自洽但向量是旧模型算的，检索质量静默变差）、向量写进了错误的集合
+   - 冒烟 `make verify-outbox`：真 Postgres 上验七段（入队与记忆行同事务、投影回填、编辑后按新内容重算、hash 未变时跳过、删除撤向量、偏好不入队、对账四种漂移方向）。跑通时观察到对账把库里历史遗留的漂移真的补了出来
+   - 迁移 `b4e6c2a91d78` 对真 Postgres 验 upgrade→downgrade→upgrade 往返；枚举字面量（`outboxop` 的 UPSERT/DELETE、`memorytype` 的 PREFERENCE）实测确认，因为对账 SQL 要逐字用它们
+   - 四个既有守卫各抓了一次并按其意图修正：枚举取值要在迁移里交代、新表要在 ORM 包登记、`obx` 前缀要登记、domain 的 stdlib allowlist 加 `types`。`test_repository_commit.py` 的不变量**反转**（从「写方法必须 commit」到「不得 commit、必须 flush」），旧约束的历史留在 docstring 里，未改造的七个仓储挂 `_PENDING_UOW` xfail —— 那个集合就是剩余进度表
+   - 新增测试约 100 条：`test_uow.py`（12，含真 SQL 回滚与嵌套回滚）、`test_outbox_repository.py`（15，租约过期回收/退避/死信/stats 时区）、`test_projector.py`（23，决策表 × op 参数化）、`test_reconciler.py`（20）、`test_metrics.py`（8）
+
+- [ ] 21.1 剩余的 unit-of-work 改造：另七个仓储（audit/budget/channel/interaction/policy/tag/task）去 `commit()`。进度表就是 `test_repository_commit.py` 里的 `_PENDING_UOW` 集合，改完一个删一行，空掉即完成。⚠️ 依赖 21.2 先做 —— 现在 `build_container()` 持有单个共享 session 并绑上十几个对象，没有 session-per-request 就没有真正的事务边界
+
+- [ ] 21.2 session-per-request：`build_container()` 的共享 session 改为入口处按次建（`container.py` 里的注释自己写了这是 MVP 待改）。覆盖 9 个 admin 子路由 + 2 个平台连接器 + worker；worker 侧的 `open_job_scope()` 已是正确形态可作模板。⚠️ 平台侧要用 `ScopedMessageRouter` 外观（每次 `route()` 开一个 scope），而 **router 不能进 `Container`** —— 那会与 `container.scope` 形成构造循环，改由 `build_connector` 在调用点构造。这是本组改造里回归面最大的一步
+
 - [ ]* 17.1 补 `error_spike` ambient 规则（现在有数据源了，但需给滚动窗口加只读不清空的取数方法 —— 它要的是按关键词聚合计数，不是蒸馏成记忆）
 - [ ]* 17.2 上下文摘要化（`compact()` 目前是「丢弃最旧 + 说明丢了几条」，真摘要要多一次 LLM 调用；配置项与形参已预留）
 - [ ]* 17.3 实测 Slack `conversations.replies` 的速率配额，据此定 `conversation_cache_ttl_seconds` 终值
