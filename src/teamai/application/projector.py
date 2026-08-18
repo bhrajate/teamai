@@ -14,13 +14,14 @@ import hashlib
 import logging
 import os
 import socket
+import time
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
 from teamai.domain.models import MemoryEntry, OutboxEntry, should_embed
-from teamai.domain.ports import Embedder
+from teamai.domain.ports import Embedder, MetricsSink, NullMetricsSink
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,14 @@ class MemoryProjector:
         lease_seconds: int = 300,
         max_attempts: int = 11,
         poll_interval_seconds: float = 2.0,
+        metrics: MetricsSink | None = None,
     ) -> None:
         self._scope_factory = scope_factory
         self._vector = vector_store
         self._embedder = embedder
+        # 无条件可调，不必到处判 None（散开的 None 判断必然漏掉一处，
+        # 而漏掉的那处就是一个静默失效的埋点）
+        self._metrics = metrics or NullMetricsSink()
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
@@ -124,7 +129,18 @@ class MemoryProjector:
                     # 单条失败不打断整批：一次 embedding 限流不该让其余记录跟着停。
                     logger.warning(f"投影记忆 {record.entry_id} 失败: {exc}")
                     report.failed.append((record.entry_id, str(exc)))
+                    self._metrics.projected(op=record.op.value, result="failed")
                     await self._mark_failed(record, str(exc), outbox)
+
+            # 队列状态在同一个 scope 里读，免得再开一次 session。放在处理之后：
+            # 要报的是「还剩多少」，处理之前读到的是「本轮开始时剩多少」。
+            try:
+                stats = await outbox.stats()
+                self._metrics.outbox_state(
+                    pending=stats.pending, dead=stats.dead, lag_seconds=stats.lag_seconds
+                )
+            except Exception as exc:
+                logger.debug(f"读取 outbox 统计失败: {exc}")
         return report
 
     async def _project(
@@ -149,6 +165,7 @@ class MemoryProjector:
         if entry is None or not should_embed(entry.type) or not entry.is_current:
             await self._drop(entry, record.entry_id, repo)
             report.deleted.append(record.entry_id)
+            self._metrics.projected(op=record.op.value, result="deleted")
             await outbox.complete(record.id)
             return
 
@@ -157,10 +174,15 @@ class MemoryProjector:
             # 已是最新。连续 edit 会给同一条记忆入多条队，后处理的那些走到这里 ——
             # 不是错误，只是省掉一次多余的 embed 调用。
             report.skipped.append(entry.id)
+            self._metrics.projected(op=record.op.value, result="skipped")
             await outbox.complete(record.id)
             return
 
+        started = time.monotonic()
         embedding = await self._embedder.embed(entry.content)
+        # 失败的调用也计时：限流时的耗时分布恰恰是要看的东西，只记成功会让
+        # 直方图看起来一切正常。
+        self._metrics.embed_duration(time.monotonic() - started)
         if not embedding:
             # embedder 把异常咽成空列表（读路径要那个语义），这里必须把它变回失败，
             # 否则这条记录会被当成投影成功而删除，向量永久缺失。
@@ -171,6 +193,7 @@ class MemoryProjector:
         entry.embedded_hash = expected
         await repo.update(entry)
         report.upserted.append(entry.id)
+        self._metrics.projected(op=record.op.value, result="upserted")
         await outbox.complete(record.id)
 
     async def _drop(self, entry: MemoryEntry | None, entry_id: str, repo) -> None:

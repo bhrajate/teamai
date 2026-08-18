@@ -31,6 +31,11 @@ dependencies = [
     "apscheduler>=3.10",
     "qdrant-client>=1.12",
     "alembic>=1.13",
+    # 指标暴露（infrastructure/metrics.py + web 的 /metrics）。
+    # 下界 0.21：multiprocess 模式下 `MultiProcessCollector` 的 mmap 文件格式在
+    # 0.21 定型，更早的版本与新版写入的文件不兼容 —— 而 worker 与 web 是两个
+    # 进程、可能不同时升级，格式不兼容时 /metrics 会读出空指标且不报错。
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]

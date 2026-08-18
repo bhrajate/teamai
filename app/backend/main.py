@@ -29,6 +29,7 @@ from teamai.adapters.slack import build_connector as build_slack_connector
 from teamai.config import settings
 from teamai.container import get_container
 from teamai.infrastructure.db import init_db_or_warn
+from teamai.infrastructure.metrics import build_metrics_asgi_app
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,12 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(build_admin_router(container))
+
+    # /metrics 有意留在 Admin 令牌保护之外，与 /health 一致：抓取端通常是
+    # Prometheus 而非人，让它带业务令牌既不方便也扩大了令牌的分发面。
+    # ⚠️ 这个端点会暴露频道数量级、投影积压等运营信息，生产部署应在反向代理层
+    # 限制来源（deploy/nginx.conf.example 里给了示例）。
+    app.mount("/metrics", build_metrics_asgi_app())
 
     for c in connectors:
         c.mount(app)

@@ -57,6 +57,7 @@ from teamai.infrastructure.messaging import (
     SlackThreadReader,
     ThreadReaderRegistry,
 )
+from teamai.infrastructure.metrics import PrometheusMetricsSink
 from teamai.infrastructure.queue import RedisTaskQueue
 from teamai.infrastructure.redis_client import RedisClientProvider
 from teamai.infrastructure.repositories import (
@@ -371,6 +372,7 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
             reconciler=MemoryReconciler(
                 SQLMemoryRepository(session),
                 SQLOutboxRepository(session, dialect=_dialect()),
+                metrics=PrometheusMetricsSink(),
             ),
         )
     finally:
@@ -392,6 +394,7 @@ def build_projector(container: Container) -> MemoryProjector:
         lease_seconds=settings.projector_lease_seconds,
         max_attempts=settings.projector_max_attempts,
         poll_interval_seconds=settings.projector_poll_interval_seconds,
+        metrics=PrometheusMetricsSink(),
     )
 
 

@@ -33,6 +33,7 @@ import logging
 from dataclasses import dataclass
 
 from teamai.domain.models import OutboxOp
+from teamai.domain.ports import MetricsSink, NullMetricsSink
 from teamai.domain.repositories import MemoryRepository, OutboxRepository
 
 logger = logging.getLogger(__name__)
@@ -68,10 +69,12 @@ class MemoryReconciler:
         outbox: OutboxRepository,
         *,
         limit: int = DEFAULT_LIMIT,
+        metrics: MetricsSink | None = None,
     ) -> None:
         self._repo = repo
         self._outbox = outbox
         self._limit = limit
+        self._metrics = metrics or NullMetricsSink()
 
     async def run_once(self) -> ReconcileReport:
         missing, stale = await self._repo.find_vector_drift(self._limit)
@@ -80,6 +83,11 @@ class MemoryReconciler:
             await self._outbox.enqueue(entry_id, OutboxOp.UPSERT)
         for entry_id in stale:
             await self._outbox.enqueue(entry_id, OutboxOp.DELETE)
+
+        # 即便为 0 也上报：Counter 的 inc(0) 让这条时间序列存在，于是看板上能区分
+        # 「系统健康（线在，恒为 0）」与「埋点没生效（线不存在）」。
+        self._metrics.reconciled(direction="upsert", count=len(missing))
+        self._metrics.reconciled(direction="delete", count=len(stale))
 
         if missing or stale:
             # info 而非 debug：长期为 0 才是正常。持续非零说明 projector 在漏活，

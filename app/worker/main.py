@@ -23,6 +23,7 @@ from teamai.container import Container, build_container, build_projector, open_j
 from teamai.domain.models import TaskStatus
 from teamai.domain.ports import QueuePayload, ReplyTarget
 from teamai.infrastructure.db import init_db_or_warn
+from teamai.infrastructure.metrics import mark_process_exit
 from teamai.infrastructure.scheduler import scheduler
 
 logger = logging.getLogger(__name__)
@@ -311,6 +312,11 @@ async def _main() -> None:
             await container.aclose()
         except Exception as exc:  # pragma: no cover - 退出路径尽力而为
             logger.warning(f"释放容器资源异常: {exc}")
+
+        # 清掉本进程的 Gauge 样本文件。不清的话重启后旧 pid 的样本会留在目录里，
+        # 而 'liveall' 模式的 Gauge 会继续暴露它们 —— 表现是「投影明明停了 lag
+        # 却不涨」，比没有指标更误导。
+        mark_process_exit()
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ from teamai.domain.ports.dedup import EventDeduplicator
 from teamai.domain.ports.embedding import Embedder
 from teamai.domain.ports.llm import LLMGateway, LLMResult, TokenBudgetExceeded
 from teamai.domain.ports.messaging import MessagePublisher, ReplyTarget
+from teamai.domain.ports.metrics import MetricsSink, NullMetricsSink
 from teamai.domain.ports.queue import QueuePayload, TaskQueue
 from teamai.domain.ports.tools import ToolBundle, ToolProvider
 from teamai.domain.ports.uow import UnitOfWork
@@ -29,6 +30,8 @@ __all__ = [
     "LLMResult",
     "MessagePublisher",
     "MessageWindow",
+    "MetricsSink",
+    "NullMetricsSink",
     "QueuePayload",
     "ReplyTarget",
     "TaskQueue",
