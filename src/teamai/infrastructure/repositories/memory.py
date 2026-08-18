@@ -19,6 +19,7 @@ def _memory_to_model(e: MemoryEntry) -> MemoryEntryModel:
         source_user_id=e.source_user_id,
         source=e.source,
         embedding_ref=e.embedding_ref,
+        embedded_hash=e.embedded_hash,
         superseded_by=e.superseded_by,
         superseded_at=e.superseded_at,
         created_at=e.created_at,
@@ -34,6 +35,7 @@ def _model_to_memory(m: MemoryEntryModel) -> MemoryEntry:
         source_user_id=m.source_user_id,
         source=m.source,
         embedding_ref=m.embedding_ref,
+        embedded_hash=m.embedded_hash,
         superseded_by=m.superseded_by,
         superseded_at=m.superseded_at,
         created_at=m.created_at,
@@ -41,13 +43,23 @@ def _model_to_memory(m: MemoryEntryModel) -> MemoryEntry:
 
 
 class SQLMemoryRepository(MemoryRepository):
+    """⚠️ 本仓储**不提交事务**，边界由 `UnitOfWork` 管理（用例层声明）。
+
+    写方法用 `flush()` 而非 `commit()`：flush 把 SQL 发到数据库，于是同一
+    session 内的后续读能看到这次写入（`supersede` 依赖这一点 —— 它写完新条目
+    紧接着要按 id 读旧条目）；但它不结束事务，所以整组写入仍能被一起回滚。
+
+    改造前每个写方法各自 `commit()`，于是「写记忆」与「记下该建向量的意图」是
+    两次独立提交，中间崩溃就丢掉后者。理由与完整设计见
+    `docs/plan-memory-outbox.md` §5.5。
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def store(self, entry: MemoryEntry) -> None:
-        # 提交理由见 SQLTaskRepository 的类说明。
         self._session.add(_memory_to_model(entry))
-        await self._session.commit()
+        await self._session.flush()
 
     async def list_by_channel(
         self,
@@ -89,13 +101,13 @@ class SQLMemoryRepository(MemoryRepository):
         表现是「改完读回的还是旧行」）。
         """
         await self._session.merge(_memory_to_model(entry))
-        await self._session.commit()
+        await self._session.flush()
 
     async def delete(self, entry_id: str) -> None:
         m = await self._session.get(MemoryEntryModel, entry_id)
         if m:
             await self._session.delete(m)
-            await self._session.commit()
+            await self._session.flush()
 
     async def list_preferences(self, channel_instance_id: str) -> list[MemoryEntry]:
         """该频道现行偏好：type='PREFERENCE' 且未被取代，按 created_at 倒序。

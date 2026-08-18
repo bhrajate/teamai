@@ -31,6 +31,13 @@ class MemoryEntryModel(Base):
         Enum(MemorySource), default=MemorySource.MANUAL
     )
     embedding_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 向量是按哪份 content 建的（md5）。对账谓词要它判「内容漂移」——
+    # 只看 embedding_ref 判不出「编辑过但向量没重算」。见 domain/models/memory.py
+    # 的字段注释与 docs/plan-memory-outbox.md §5.1。
+    #
+    # 存量行留 NULL:改造前的向量来自双写路径，无从追溯当时的内容。对账会把
+    # 它们全部判为「需重算」，比写一个猜测原内容的回填脚本可靠。
+    embedded_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 取代本条的记忆 id。加索引：检索路径一律带 `superseded_by IS NULL`，
     # 这是每次查询都要过的条件。
     #

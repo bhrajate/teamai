@@ -15,7 +15,8 @@ from teamai.domain.models.budget import (
 )
 from teamai.domain.models.channel import ChannelInstance
 from teamai.domain.models.interaction import AgentInteraction, InteractionResult
-from teamai.domain.models.memory import MemoryEntry, MemorySource, MemoryType
+from teamai.domain.models.memory import MemoryEntry, MemorySource, MemoryType, should_embed
+from teamai.domain.models.outbox import OutboxEntry, OutboxOp
 from teamai.domain.models.policy import AmbientRule, PermissionPolicy
 from teamai.domain.models.tag import TagTemplate
 from teamai.domain.models.task import InvalidTransition, Task, TaskStatus
@@ -36,6 +37,9 @@ __all__ = [
     "MemoryEntry",
     "MemorySource",
     "MemoryType",
+    "OutboxEntry",
+    "OutboxOp",
+    "should_embed",
     "PermissionPolicy",
     "Task",
     "TaskStatus",

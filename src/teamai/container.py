@@ -62,6 +62,7 @@ from teamai.infrastructure.repositories import (
     SQLChannelRepository,
     SQLInteractionRepository,
     SQLMemoryRepository,
+    SQLOutboxRepository,
     SQLPolicyRepository,
     SQLTagRepository,
     SQLTaskRepository,
@@ -70,6 +71,7 @@ from teamai.infrastructure.tools.crm_tool import build_crm_tool
 from teamai.infrastructure.tools.github_tool import build_github_tool
 from teamai.infrastructure.tools.monitoring_tool import build_monitoring_tool
 from teamai.infrastructure.tools.registry import ToolRegistry
+from teamai.infrastructure.uow import SQLUnitOfWork
 from teamai.infrastructure.vector import VectorStore, build_vector_store
 from teamai.infrastructure.window import build_message_window
 
@@ -128,6 +130,16 @@ class Container:
         await self.thread_reader.aclose()  # type: ignore[attr-defined]
 
 
+def _dialect() -> str:
+    """连接串里的方言名，供 SQLOutboxRepository 决定是否用 `FOR UPDATE SKIP LOCKED`。
+
+    由组合根判定而非让仓储向 session 询问：`AsyncSession` 上取方言要绕
+    `get_bind()`，而它在异步上下文里的行为随 SQLAlchemy 版本变过。组合根本来
+    就知道自己连的是什么库。
+    """
+    return "postgresql" if settings.database_url.startswith("postgresql") else "sqlite"
+
+
 def build_tools() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(build_github_tool())
@@ -147,8 +159,13 @@ def build_container() -> Container:
     factory = get_session_factory()
     session = factory()
 
+    # 工作单元与全部仓储共用同一个 session —— 这是事务边界生效的前提。
+    # 各自建 session 不会报错，只会让边界静默失效（见 infrastructure/uow.py）。
+    uow = SQLUnitOfWork(session)
+
     task_repo = SQLTaskRepository(session)
     memory_repo = SQLMemoryRepository(session)
+    outbox_repo = SQLOutboxRepository(session, dialect=_dialect())
     tag_repo = SQLTagRepository(session)
     policy_repo = SQLPolicyRepository(session)
     budget_repo = SQLBudgetRepository(session)
@@ -197,7 +214,13 @@ def build_container() -> Container:
     orchestrator = TaskOrchestrator(task_repo, audit, queue)
     budget = BudgetController(budget_repo, audit)
     memory = MemoryService(
-        memory_repo, channel_repo, audit, vector_store=vector_store, embedder=embedder
+        memory_repo,
+        channel_repo,
+        audit,
+        outbox_repo,
+        uow,
+        vector_store=vector_store,
+        embedder=embedder,
     )
     interactions = InteractionService(
         interaction_repo, retention_days=settings.interactions_retention_days
@@ -311,6 +334,8 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
             SQLMemoryRepository(session),
             SQLChannelRepository(session),
             audit,
+            SQLOutboxRepository(session, dialect=_dialect()),
+            SQLUnitOfWork(session),
             vector_store=container.vector_store,
             embedder=container.embedder,
         )

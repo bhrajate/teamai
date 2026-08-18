@@ -19,6 +19,7 @@ from teamai.domain.ports.llm import LLMGateway, LLMResult, TokenBudgetExceeded
 from teamai.domain.ports.messaging import MessagePublisher, ReplyTarget
 from teamai.domain.ports.queue import QueuePayload, TaskQueue
 from teamai.domain.ports.tools import ToolBundle, ToolProvider
+from teamai.domain.ports.uow import UnitOfWork
 
 __all__ = [
     "AmbientCooldown",
@@ -38,4 +39,5 @@ __all__ = [
     "TokenBudgetExceeded",
     "ToolBundle",
     "ToolProvider",
+    "UnitOfWork",
 ]

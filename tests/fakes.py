@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
+from teamai.domain.identity import gen_id
 from teamai.domain.models import (
     AuditLog,
     BudgetQuota,
     ChannelInstance,
     MemoryEntry,
     MemoryType,
+    OutboxEntry,
+    OutboxOp,
     Task,
     TaskStatus,
 )
@@ -25,8 +28,14 @@ from teamai.domain.repositories import (
     BudgetRepository,
     ChannelRepository,
     MemoryRepository,
+    OutboxRepository,
+    OutboxStats,
     TaskRepository,
 )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class FakeTaskQueue(TaskQueue):
@@ -113,6 +122,65 @@ class FakeMessagePublisher(MessagePublisher):
 
     async def reply(self, target: ReplyTarget, text: str) -> None:
         self.replies.append((target, text))
+
+
+class FakeOutboxRepository(OutboxRepository):
+    """内存 outbox 仓储。
+
+    `enqueued` 记下每次入队的 (entry_id, op)，供断言「写入侧确实记下了投影意图」
+    —— 这是 outbox 方案的核心保证，替身必须让它可观测。
+
+    租约与退避的真实语义由 tests/unit/test_outbox_repository.py 打真 SQL 锁住，
+    这里只做最朴素的实现：`claim` 按入队顺序返回全部未死信记录、不判租约。
+    用例若要验租约行为，该去那个文件。
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[str, OutboxOp]] = []
+        self.entries: list[OutboxEntry] = []
+        self.completed: list[str] = []
+        self.failures: list[tuple[str, str]] = []
+
+    async def enqueue(self, entry_id: str, op: OutboxOp) -> OutboxEntry:
+        self.enqueued.append((entry_id, op))
+        entry = OutboxEntry(id=gen_id("obx"), entry_id=entry_id, op=op)
+        self.entries.append(entry)
+        return entry
+
+    async def claim(self, *, limit: int, lease_seconds: int, claimed_by: str) -> list[OutboxEntry]:
+        alive = [e for e in self.entries if not e.is_dead]
+        taken = alive[:limit]
+        for e in taken:
+            e.claimed_by = claimed_by
+        return taken
+
+    async def complete(self, outbox_id: str) -> None:
+        self.completed.append(outbox_id)
+        self.entries = [e for e in self.entries if e.id != outbox_id]
+
+    async def fail(
+        self, outbox_id: str, error: str, *, max_attempts: int, backoff_seconds: int
+    ) -> None:
+        self.failures.append((outbox_id, error))
+        for e in self.entries:
+            if e.id == outbox_id:
+                e.attempts += 1
+                e.last_error = error
+                e.claimed_by = None
+                if e.attempts >= max_attempts:
+                    e.failed_at = _utcnow()
+
+    async def stats(self) -> OutboxStats:
+        alive = [e for e in self.entries if not e.is_dead]
+        lag = 0.0
+        if alive:
+            oldest = min(e.created_at for e in alive)
+            lag = max(0.0, (_utcnow() - oldest).total_seconds())
+        return OutboxStats(
+            pending=len(alive),
+            dead=len([e for e in self.entries if e.is_dead]),
+            lag_seconds=lag,
+        )
 
 
 class FakeMemoryRepository(MemoryRepository):

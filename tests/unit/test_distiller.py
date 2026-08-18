@@ -22,12 +22,14 @@ from teamai.domain.models import (
 )
 from teamai.domain.ports import LLMGateway, LLMResult, ToolBundle
 from teamai.domain.services import AuditLogWriter
+from teamai.infrastructure.uow import NullUnitOfWork
 from teamai.infrastructure.window import InMemoryMessageWindow
 from tests.fakes import (
     FakeAuditRepository,
     FakeBudgetRepository,
     FakeChannelRepository,
     FakeMemoryRepository,
+    FakeOutboxRepository,
 )
 
 
@@ -79,7 +81,9 @@ def _build(
     audit = AuditLogWriter(FakeAuditRepository())
     memory_repo = FakeMemoryRepository()
     budget_repo = FakeBudgetRepository(quota)
-    memory = MemoryService(memory_repo, FakeChannelRepository(), audit)
+    memory = MemoryService(
+        memory_repo, FakeChannelRepository(), audit, FakeOutboxRepository(), NullUnitOfWork()
+    )
     gateway = StubGateway(output, tokens, outputs=outputs)
     distiller = MemoryDistiller(
         InMemoryMessageWindow(),
@@ -227,7 +231,13 @@ async def test_蒸馏走_MEMORY_DISTILL_审计动作() -> None:
     """人工写入与系统蒸馏要能区分，否则排查「记忆库里怎么会有这条」无从下手。"""
     audit_repo = FakeAuditRepository()
     audit = AuditLogWriter(audit_repo)
-    memory = MemoryService(FakeMemoryRepository(), FakeChannelRepository(), audit)
+    memory = MemoryService(
+        FakeMemoryRepository(),
+        FakeChannelRepository(),
+        audit,
+        FakeOutboxRepository(),
+        NullUnitOfWork(),
+    )
     distiller = MemoryDistiller(
         InMemoryMessageWindow(),
         memory,
@@ -460,7 +470,9 @@ async def test_单个频道失败不打断整轮() -> None:
 
     audit = AuditLogWriter(FakeAuditRepository())
     memory_repo = FakeMemoryRepository()
-    memory = MemoryService(memory_repo, FakeChannelRepository(), audit)
+    memory = MemoryService(
+        memory_repo, FakeChannelRepository(), audit, FakeOutboxRepository(), NullUnitOfWork()
+    )
     distiller = MemoryDistiller(
         InMemoryMessageWindow(),
         memory,
@@ -488,7 +500,13 @@ async def test_入窗失败不外抛() -> None:
     audit = AuditLogWriter(FakeAuditRepository())
     distiller = MemoryDistiller(
         BrokenWindow(),
-        MemoryService(FakeMemoryRepository(), FakeChannelRepository(), audit),
+        MemoryService(
+            FakeMemoryRepository(),
+            FakeChannelRepository(),
+            audit,
+            FakeOutboxRepository(),
+            NullUnitOfWork(),
+        ),
         StubGateway(),
         BudgetController(FakeBudgetRepository(), audit),
     )
@@ -502,7 +520,13 @@ async def test_静置超时也触发蒸馏(idle: int, expect_call: int) -> None:
     audit = AuditLogWriter(FakeAuditRepository())
     distiller = MemoryDistiller(
         InMemoryMessageWindow(),
-        MemoryService(FakeMemoryRepository(), FakeChannelRepository(), audit),
+        MemoryService(
+            FakeMemoryRepository(),
+            FakeChannelRepository(),
+            audit,
+            FakeOutboxRepository(),
+            NullUnitOfWork(),
+        ),
         gateway := StubGateway("FACT|某事实"),
         BudgetController(FakeBudgetRepository(), audit),
         window_size=99,  # 永远攒不满，只能靠静置触发

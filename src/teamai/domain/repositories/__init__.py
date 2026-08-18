@@ -11,6 +11,7 @@ from teamai.domain.repositories.budget import BudgetRepository
 from teamai.domain.repositories.channel import ChannelRepository
 from teamai.domain.repositories.interaction import InteractionRepository
 from teamai.domain.repositories.memory import MemoryRepository
+from teamai.domain.repositories.outbox import OutboxRepository, OutboxStats
 from teamai.domain.repositories.policy import PolicyRepository
 from teamai.domain.repositories.tag import TagRepository
 from teamai.domain.repositories.task import TaskRepository
@@ -21,6 +22,8 @@ __all__ = [
     "ChannelRepository",
     "InteractionRepository",
     "MemoryRepository",
+    "OutboxRepository",
+    "OutboxStats",
     "PolicyRepository",
     "TagRepository",
     "TaskRepository",

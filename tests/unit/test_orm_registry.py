@@ -20,6 +20,7 @@ EXPECTED_TABLES = {
     "budget_quotas",
     "channel_instances",
     "memory_entries",
+    "memory_outbox",
     "permission_policies",
     "tag_templates",
     "tasks",

@@ -1,5 +1,21 @@
 """记忆服务：频道记忆的存储、检索与偏好分层。
 
+## 写路径不再碰向量
+
+四个写方法（store / edit / supersede / delete）只做两件事：改 `memory_entries`，
+并在**同一事务**里往 `memory_outbox` 记一条「该重算向量」的意图。向量由 worker
+里的 `MemoryProjector` 异步投影。
+
+这么改消除的是一整类缺陷：改造前 `store()` 先提交记忆行、再调 embedding API，
+中间崩溃或 API 失败就得到一条永远没有向量的记忆，而项目没有对账、无人发现。
+`edit()` 更糟 —— 它在写库**之前**就重算了向量，崩溃后检索会按一份没人存的文本
+命中。九个确认缺陷与完整设计见 `docs/plan-memory-outbox.md`。
+
+读路径（`query_for_context` / `find_similar` / `_semantic_hits`）仍直接用
+`vector_store` 与 `embedder`：检索是只读的，向量不可用时回落到时间倒序即可，
+不需要经队列。所以这两样仍在构造参数里。
+
+
 本服务只处理「结论」—— 值得跨会话记住的事实、决策与偏好。原始聊天消息不进
 这里：它们先进 MessageWindow 滚动缓冲，由 MemoryDistiller 蒸馏后才可能变成
 一条记忆。此前 router 把每条非 @ 消息直接塞进来，导致「收到」「好的」与真正
@@ -20,9 +36,11 @@ from teamai.domain.models import (
     MemoryEntry,
     MemorySource,
     MemoryType,
+    OutboxOp,
+    should_embed,
 )
-from teamai.domain.ports import Embedder
-from teamai.domain.repositories import ChannelRepository, MemoryRepository
+from teamai.domain.ports import Embedder, UnitOfWork
+from teamai.domain.repositories import ChannelRepository, MemoryRepository, OutboxRepository
 from teamai.domain.services import AuditLogWriter
 
 logger = logging.getLogger(__name__)
@@ -38,12 +56,16 @@ class MemoryService:
         repo: MemoryRepository,
         channel_repo: ChannelRepository,
         audit: AuditLogWriter,
+        outbox: OutboxRepository,
+        uow: UnitOfWork,
         vector_store=None,
         embedder: Embedder | None = None,
     ) -> None:
         self._repo = repo
         self._channel_repo = channel_repo
         self._audit = audit
+        self._outbox = outbox
+        self._uow = uow
         self._vector = vector_store
         self._embedder = embedder
 
@@ -58,19 +80,6 @@ class MemoryService:
         """
         return self._vector is not None and self._embedder is not None and self._embedder.available
 
-    @staticmethod
-    def _should_embed(type: MemoryType) -> bool:
-        """这个类型的记忆该不该有向量。唯一的判定处，写入与编辑两条路径都问它。
-
-        偏好不建向量：它在检索时被无条件全量带上（query_for_context 的偏好段），
-        建了向量只会白白竞争 top_k 名额。
-
-        为什么收口成一个函数而不是在各处写 `if type is PREFERENCE`：合表后
-        「有没有向量」取决于 `type` 这个**可变**字段，散开写就会漏 —— 漏掉的
-        正是 edit() 只改 type 不改 content 的那条路径，两个方向都错（改成偏好
-        则旧向量残留、白占名额；改回普通记忆则永远没有向量、语义检索找不到）。
-        """
-        return type is not MemoryType.PREFERENCE
 
     async def store(
         self,
@@ -87,23 +96,31 @@ class MemoryService:
         `action` 与 `source` 都可覆盖成蒸馏用的值：人工写入与系统蒸馏既要在
         审计里能区分（action），也要在记忆本身上能区分（source）—— 只有前者的话，
         排查「这条是谁写的」得去翻审计流水。
+
+        向量不在这里写：入队一条 UPSERT，由 projector 异步投影。所以本方法返回
+        后 `entry.embedding_ref` 仍是 None —— 调用方不该依赖它，「有没有向量」是
+        暂态，由对账保证最终收敛。
         """
-        entry = MemoryEntry(
-            id=gen_id("mem"),
-            channel_instance_id=channel_instance_id,
-            content=content,
-            type=type,
-            source_user_id=source_user_id,
-            source=source,
-        )
-        await self._repo.store(entry)
-        await self._embed_if_available(entry)
-        await self._audit.record(
-            channel_instance_id,
-            action,
-            user_id=source_user_id,
-            detail={"entry_id": entry.id, "type": type.value, "source": source.value},
-        )
+        async with self._uow:
+            entry = MemoryEntry(
+                id=gen_id("mem"),
+                channel_instance_id=channel_instance_id,
+                content=content,
+                type=type,
+                source_user_id=source_user_id,
+                source=source,
+            )
+            await self._repo.store(entry)
+            # 偏好不建向量，连队都不入 —— 入了 projector 也只会判「不该有向量」
+            # 然后删一次，白跑一轮。
+            if should_embed(entry.type):
+                await self._outbox.enqueue(entry.id, OutboxOp.UPSERT)
+            await self._audit.record(
+                channel_instance_id,
+                action,
+                user_id=source_user_id,
+                detail={"entry_id": entry.id, "type": type.value, "source": source.value},
+            )
         return entry
 
     async def edit(
@@ -123,45 +140,49 @@ class MemoryService:
         补充措辞），改完仍是同一条事实；supersede 是「事实变了」（超时从 3 秒
         改成 5 秒），旧的那条曾经成立、留着可查。混用会丢失后者的历史。
         """
+        # 读在事务外：不存在时直接返回，不必为一次空查询开一个事务再提交。
         entry = await self._repo.get(entry_id)
         if entry is None:
             return None
 
-        old_content, old_type = entry.content, entry.type
-        content_changed = content is not None and content != old_content
+        async with self._uow:
+            old_content, old_type = entry.content, entry.type
+            content_changed = content is not None and content != old_content
 
-        if content is not None:
-            entry.content = content
-        if type is not None:
-            entry.type = type
-        entry.source = entry.edited()
+            if content is not None:
+                entry.content = content
+            if type is not None:
+                entry.type = type
+            entry.source = entry.edited()
 
-        # 只改 type 也要重算：向量该不该存在由 _should_embed 决定，而它读的正是
-        # type。普通记忆改成偏好要删旧向量（否则残留向量白占 top_k
-        # 名额），偏好改回普通记忆要补建（它当初跳过了建索引，不补就永远只能
-        # 靠时间倒序回落偶然捞到）。
-        embed_changed = self._should_embed(entry.type) is not self._should_embed(old_type)
-        if content_changed or embed_changed:
-            # 内容变了必须重算向量：旧向量对应旧文本，不重算就等于「按旧内容
-            # 命中新条目」。重算失败时**删掉**旧向量而不是留着 —— 留着比没有
-            # 更糟，检索会持续按已被改掉的内容命中它。
-            entry.embedding_ref = await self._reembed(entry)
+            # 只改 type 也要入队：向量该不该存在由 should_embed 决定，而它读的正是
+            # type。普通记忆改成偏好要删旧向量（否则残留向量白占 top_k 名额），
+            # 偏好改回普通记忆要补建（它当初跳过了建索引，不补就永远只能靠时间
+            # 倒序回落偶然捞到）。两个方向都由 projector 按当前状态自行决定，
+            # 这里只负责「告诉它这条变了」。
+            embed_changed = should_embed(entry.type) is not should_embed(old_type)
+            if content_changed or embed_changed:
+                # ⚠️ 顺序与改造前相反且这很重要：改造前是先重算向量、后写库，
+                # 崩溃后检索会按一份没人存的文本命中。现在两者同事务，且投影
+                # 发生在提交之后 —— projector 回读到的必然是已落库的内容。
+                op = OutboxOp.UPSERT if should_embed(entry.type) else OutboxOp.DELETE
+                await self._outbox.enqueue(entry.id, op)
 
-        await self._repo.update(entry)
-        await self._audit.record(
-            entry.channel_instance_id,
-            AuditAction.MEMORY_EDIT,
-            user_id=actor,
-            detail={
-                "entry_id": entry.id,
-                # 只留摘要不留全文：审计表不该变成内容的第二份副本
-                "old_content": old_content[:50],
-                "content_changed": content_changed,
-                "old_type": old_type.value,
-                "new_type": entry.type.value,
-                "source": entry.source.value,
-            },
-        )
+            await self._repo.update(entry)
+            await self._audit.record(
+                entry.channel_instance_id,
+                AuditAction.MEMORY_EDIT,
+                user_id=actor,
+                detail={
+                    "entry_id": entry.id,
+                    # 只留摘要不留全文：审计表不该变成内容的第二份副本
+                    "old_content": old_content[:50],
+                    "content_changed": content_changed,
+                    "old_type": old_type.value,
+                    "new_type": entry.type.value,
+                    "source": entry.source.value,
+                },
+            )
         return entry
 
     async def supersede(
@@ -179,14 +200,16 @@ class MemoryService:
         返回新条目；旧 id 不存在时返回 None（调用方应降级为纯 store —— 见
         MemoryDistiller._apply_actions 里的说明）。
 
-        顺序是先写新、再标旧：反过来的话，若写新条目失败，旧条目已被标记为
-        「已取代」而取代它的东西不存在 —— 那条事实会从检索里消失，比留着旧值
-        更糟。两步之间没有事务保护（仓储各自 commit），所以顺序就是唯一的
-        保障手段。
+        改造前这里是**四个独立提交**（写新 → 标旧 → 删旧向量 → 再写一次清
+        embedding_ref），崩在中间会留下两种坏状态：新条目已存在而旧条目仍是现行
+        （同一事实两条并列），或旧条目已作废但向量还在（过期事实继续被命中）。
+        当时的注释说「顺序就是唯一的保障手段」—— 现在不必了，整个操作在一个
+        事务里，要么全落要么全不落。
 
         旧条目**不删**：这正是 superseded_by 存在的意义，见 MemoryEntry 的
         字段注释。
         """
+        # 读与校验在事务外：两条早退路径都不该开事务。
         old = await self._repo.get(old_entry_id)
         if old is None:
             return None
@@ -201,33 +224,40 @@ class MemoryService:
             )
             return None
 
-        new_entry = await self.store(
-            channel_instance_id,
-            content,
-            type=type,
-            source=source,
-            action=action,
-        )
+        async with self._uow:
+            # store() 内部也开一个工作单元，但 UnitOfWork 可重入 —— 内层退出是
+            # no-op，只有这里的最外层提交。没有可重入性，store() 返回时就会把
+            # 「新条目已写、旧条目还没标记」这个中间态提交出去。
+            new_entry = await self.store(
+                channel_instance_id,
+                content,
+                type=type,
+                source=source,
+                action=action,
+            )
 
-        old.supersede(new_entry.id)
-        await self._repo.update(old)
-        # 旧条目的向量要撤掉：留着它会让检索按已作废的事实命中，而 top_k 名额
-        # 有限。与 edit() 里「重算失败就删旧向量」是同一个判断 —— 一个指向过期
-        # 内容的向量比没有向量更糟。
-        await self._drop_vector(old.id)
-        old.embedding_ref = None
-        await self._repo.update(old)
+            old.supersede(new_entry.id)
+            await self._repo.update(old)
+            # 旧条目的向量要撤掉：留着它会让检索按已作废的事实命中，而 top_k
+            # 名额有限。一个指向过期内容的向量比没有向量更糟。
+            #
+            # 这里只入队，不直接删：删向量是远程调用，放进事务等于让事务等一次
+            # 网络往返；而入队之后 projector 会回读到「已被取代」并执行删除。
+            # embedding_ref 也不在这里清 —— 由 projector 删成功后回填，那才是
+            # 「向量真的没了」的时刻。改造前在这里清，于是删失败时库里说没有、
+            # 实际还在，对账也就查不出来。
+            await self._outbox.enqueue(old.id, OutboxOp.DELETE)
 
-        await self._audit.record(
-            channel_instance_id,
-            AuditAction.MEMORY_EDIT,
-            detail={
-                "action": "supersede",
-                "old_entry_id": old.id,
-                "new_entry_id": new_entry.id,
-                "old_content": old.content[:50],
-            },
-        )
+            await self._audit.record(
+                channel_instance_id,
+                AuditAction.MEMORY_EDIT,
+                detail={
+                    "action": "supersede",
+                    "old_entry_id": old.id,
+                    "new_entry_id": new_entry.id,
+                    "old_content": old.content[:50],
+                },
+            )
         return new_entry
 
     async def find_similar(
@@ -318,16 +348,16 @@ class MemoryService:
             logger.warning(f"向量检索失败，回落到时间倒序: {exc}")
             return []
         entries = [await self._repo.get(eid) for eid in ids]
-        # 过滤已被取代的、以及偏好：被取代条目在 supersede 时会撤向量，但撤向量
-        # 失败只告警（_drop_vector 的取舍），残留向量仍会命中，这里兜一道，避免
-        # 过期事实靠一次失败的向量删除就流回上下文。
+        # 过滤已被取代的、以及偏好：被取代条目在 supersede 时会入队删向量，但
+        # 投影是异步的 —— 从提交到 projector 处理完之间有个窗口（目标 p99 < 5
+        # 秒），期间残留向量仍会命中。这里兜一道，避免过期事实在那几秒里流回
+        # 上下文。改造前这道过滤兜的是「删向量失败只打 warning」，现在兜的是
+        # 投影延迟；两者都需要它，理由不同。
         #
-        # 偏好按 `_should_embed` 本不该有向量，这里仍要滤：生产库可能残留合表前
-        # 蒸馏写下的 PREFERENCE 向量，或某次删向量失败的残留 —— 不滤的话它占着
+        # 偏好按 `should_embed` 本不该有向量，这里仍要滤：生产库可能残留合表前
+        # 蒸馏写下的 PREFERENCE 向量，或投影尚未追上的残留 —— 不滤的话它占着
         # top_k 名额，还与偏好段重复。这是对向量库实际状态的兜底，不是判定。
-        return [
-            e for e in entries if e is not None and e.is_current and self._should_embed(e.type)
-        ]
+        return [e for e in entries if e is not None and e.is_current and should_embed(e.type)]
 
     async def list(
         self,
@@ -349,83 +379,17 @@ class MemoryService:
         entry = await self._repo.get(entry_id)
         if entry is None:
             return
-        await self._repo.delete(entry_id)
-        # 同步清向量。不清的话向量留在库里继续被检索命中，随后因取不到实体
-        # 而被过滤 —— 不会泄露已删内容，但白占 top_k 名额，删多了检索质量
-        # 静默下降。改造前没有这一步，缺陷被「向量路径从未运行」掩盖着。
-        await self._drop_vector(entry_id)
-        await self._audit.record(
-            entry.channel_instance_id,
-            AuditAction.MEMORY_DELETE,
-            user_id=actor,
-            detail={"entry_id": entry_id},
-        )
+        async with self._uow:
+            await self._repo.delete(entry_id)
+            # 入队删向量。⚠️ 必须与删行同事务：行删掉后 projector 回读为空，
+            # 那正是「删向量」的信号（见 plan-memory-outbox.md §5.2）。若这条
+            # 入队丢了，向量会永远留在库里白占 top_k 名额 —— 改造前就是这样，
+            # `_drop_vector` 失败只打一条 warning。
+            await self._outbox.enqueue(entry_id, OutboxOp.DELETE)
+            await self._audit.record(
+                entry.channel_instance_id,
+                AuditAction.MEMORY_DELETE,
+                user_id=actor,
+                detail={"entry_id": entry_id},
+            )
 
-    async def _drop_vector(self, entry_id: str) -> None:
-        """删向量。失败只告警：Postgres 行是权威源，它已经删了。
-
-        为向量库不可用而让整个删除失败是更糟的结果 —— 用户点了删除却报错，
-        而数据其实已经没了。与 _embed_if_available 的降级取舍一致。
-        """
-        if self._vector is None:
-            return
-        try:
-            await self._vector.delete(entry_id)
-        except Exception as exc:  # pragma: no cover - 外部服务不可用
-            logger.warning(f"记忆 {entry_id} 的向量删除失败，索引里可能残留: {exc}")
-
-    async def _reembed(self, entry: MemoryEntry) -> str | None:
-        """重算向量，返回新的 embedding_ref。
-
-        失败时删掉旧向量并返回 None：见 edit() 里的说明 —— 留着旧向量会让
-        检索按已被改掉的内容命中它，比没有索引更糟。
-
-        编辑后是偏好同样要删旧向量再返回（`_should_embed` 为假的分支）：偏好
-        不建向量，直接 return 会留下「按被改掉的内容命中」的旧向量。
-        """
-        if not self._should_embed(entry.type):
-            await self._drop_vector(entry.id)
-            return None
-        if not self._vector_ready:
-            await self._drop_vector(entry.id)
-            return None
-        try:
-            embedding = await self._embedder.embed(entry.content)  # type: ignore[union-attr]
-            if embedding:
-                return await self._vector.upsert(entry, embedding)
-        except Exception as exc:  # pragma: no cover
-            logger.warning(f"记忆 {entry.id} 向量重算失败: {exc}")
-        await self._drop_vector(entry.id)
-        return None
-
-    async def _embed_if_available(self, entry: MemoryEntry) -> None:
-        """建索引并把引用回填到 entry.embedding_ref。
-
-        回填之后「哪些记忆已建索引」才可查 —— 改造前这个字段声明了、mapper
-        两侧也在传，但没有任何代码写入它，于是
-        scripts/cleanup_chat_memories.py 里 `embedding_ref IS NULL` 恒为真。
-
-        偏好跳过向量：见 `_should_embed` —— 偏好不走语义检索（检索时无条件
-        全带），建了向量只会白白竞争 top_k 名额。
-        """
-        if not self._should_embed(entry.type):
-            return
-        if not self._vector_ready:
-            return
-        try:
-            embedding = await self._embedder.embed(entry.content)  # type: ignore[union-attr]
-            if not embedding:
-                return
-            ref = await self._vector.upsert(entry, embedding)
-        except Exception as exc:  # pragma: no cover
-            # 写向量失败不回滚记忆：条目本身已落库，检索时会经时间倒序的回落
-            # 路径拿到它。反过来（为向量失败而丢弃记忆）损失更大。
-            logger.warning(f"记忆 {entry.id} 向量写入失败: {exc}")
-            return
-        if ref:
-            entry.embedding_ref = ref
-            try:
-                await self._repo.update(entry)
-            except Exception as exc:  # pragma: no cover
-                # 回填失败只影响「能否查出漏索引的条目」，向量本身已经写进去了
-                logger.warning(f"记忆 {entry.id} 的 embedding_ref 回填失败: {exc}")

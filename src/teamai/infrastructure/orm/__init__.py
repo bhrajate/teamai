@@ -12,6 +12,7 @@ from teamai.infrastructure.orm.budget import BudgetQuotaModel
 from teamai.infrastructure.orm.channel import ChannelInstanceModel
 from teamai.infrastructure.orm.interaction import AgentInteractionModel
 from teamai.infrastructure.orm.memory import MemoryEntryModel
+from teamai.infrastructure.orm.outbox import MemoryOutboxModel
 from teamai.infrastructure.orm.policy import PolicyModel
 from teamai.infrastructure.orm.tag import TagTemplateModel
 from teamai.infrastructure.orm.task import TaskModel
@@ -22,6 +23,7 @@ __all__ = [
     "BudgetQuotaModel",
     "ChannelInstanceModel",
     "MemoryEntryModel",
+    "MemoryOutboxModel",
     "PolicyModel",
     "TagTemplateModel",
     "TaskModel",

@@ -21,7 +21,7 @@ ULID_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{ULID_LENGTH}}}$")
 ID_COLUMN_LENGTH = 32
 
 # 代码库里实际用到的全部前缀，新增时同步更新
-KNOWN_PREFIXES = ["task", "mem", "tag", "ch", "ai", "pol", "bq", "audit", "itr"]
+KNOWN_PREFIXES = ["task", "mem", "tag", "ch", "ai", "pol", "bq", "audit", "itr", "obx"]
 
 
 def test_ulid_长度与字母表() -> None:

@@ -24,10 +24,17 @@ from teamai.domain.models import (
     MemoryEntry,
     MemorySource,
     MemoryType,
+    OutboxOp,
 )
 from teamai.domain.ports import Embedder
 from teamai.domain.services import AuditLogWriter
-from tests.fakes import FakeAuditRepository, FakeChannelRepository, FakeMemoryRepository
+from teamai.infrastructure.uow import NullUnitOfWork
+from tests.fakes import (
+    FakeAuditRepository,
+    FakeChannelRepository,
+    FakeMemoryRepository,
+    FakeOutboxRepository,
+)
 
 
 class StubEmbedder(Embedder):
@@ -91,13 +98,25 @@ def _service(
     *,
     vector=None,
     embedder: Embedder | None = None,
+    outbox: FakeOutboxRepository | None = None,
 ) -> tuple[MemoryService, FakeMemoryRepository, FakeAuditRepository]:
+    """装一个 MemoryService。
+
+    `NullUnitOfWork`：这些用例验的是业务逻辑，事务边界本身由
+    tests/unit/test_uow.py 打真 SQL 锁住。用 Null 实现而非 None，是因为服务层
+    无条件 `async with self._uow` —— 见 infrastructure/uow.py 里 NullUnitOfWork
+    的说明。
+
+    outbox 默认新建一个，需要断言入队内容的用例显式传入自己那份。
+    """
     memory_repo = repo or FakeMemoryRepository()
     audit_repo = FakeAuditRepository()
     service = MemoryService(
         memory_repo,
         FakeChannelRepository(),
         AuditLogWriter(audit_repo),
+        outbox or FakeOutboxRepository(),
+        NullUnitOfWork(),
         vector_store=vector,
         embedder=embedder,
     )
@@ -142,16 +161,25 @@ async def test_审计动作可覆盖为蒸馏() -> None:
     assert audit_repo.logs[0].action is AuditAction.MEMORY_DISTILL
 
 
-async def test_装了embedder才写向量() -> None:
-    """回归点：改造前 embedder 从未注入，Qdrant 一次都没被写过。"""
+async def test_写入只入队不碰向量() -> None:
+    """写路径把向量交给 outbox，自己不调 embedder、不写向量库。
+
+    这条替换了改造前的「装了 embedder 才写向量」。那个用例守的是「组合根真的
+    注入了 embedder」这个回归点，现在由 projector 侧的用例守（写路径压根不该
+    有 embedder 参与），而这里守新契约:意图落库、远程调用推迟。
+
+    负向断言不可省 —— 少了它，写路径哪天又直接写起向量来，测试仍会绿。
+    """
     vector = StubVectorStore()
     embedder = StubEmbedder()
-    service, _, _ = _service(vector=vector, embedder=embedder)
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=vector, embedder=embedder, outbox=outbox)
 
     entry = await service.store("ch_1", "值得记的事实")
 
-    assert vector.upserted == [entry.id]
-    assert embedder.calls == ["值得记的事实"]
+    assert outbox.enqueued == [(entry.id, OutboxOp.UPSERT)]
+    assert vector.upserted == [], "写路径不该直接写向量"
+    assert embedder.calls == [], "写路径不该调 embedding API"
 
 
 async def test_embedder不可用时跳过向量写入() -> None:
@@ -241,29 +269,35 @@ async def test_偏好不受top_k裁剪全部带上() -> None:
     assert [h.content for h in semantic] == ["事实 9", "事实 8"], "偏好不占用 top_k 名额"
 
 
-async def test_偏好不建向量() -> None:
-    """偏好是「无条件全带」的固定上下文，不该参与 top_k 竞争。"""
-    vector = StubVectorStore()
-    embedder = StubEmbedder()
-    service, _, _ = _service(vector=vector, embedder=embedder)
+async def test_偏好连队都不入() -> None:
+    """偏好是「无条件全带」的固定上下文，不该参与 top_k 竞争。
 
-    await service.store("ch_1", "回答要简短", type=MemoryType.PREFERENCE)
-    await service.store("ch_1", "值得记的事实")
+    偏好不入队而非「入队后由 projector 判掉」:入了也只会让 projector 回读一次、
+    判「不该有向量」、再删一次，白跑一轮。写入侧已经知道答案就别推给下游。
+    """
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
 
-    assert vector.upserted_content == ["值得记的事实"], "只有普通记忆建向量，偏好跳过"
+    pref = await service.store("ch_1", "回答要简短", type=MemoryType.PREFERENCE)
+    fact = await service.store("ch_1", "值得记的事实")
+
+    assert outbox.enqueued == [(fact.id, OutboxOp.UPSERT)], "只有普通记忆入队"
+    assert pref.id not in [eid for eid, _ in outbox.enqueued]
 
 
-async def test_编辑为偏好时删除旧向量() -> None:
-    """编辑成偏好后不建向量，但必须删掉旧向量 —— 否则按被改掉的内容命中。"""
-    vector = StubVectorStore()
-    embedder = StubEmbedder()
-    service, _, _ = _service(vector=vector, embedder=embedder)
+async def test_编辑为偏好时入队删向量() -> None:
+    """编辑成偏好后不该有向量，必须入一条 DELETE —— 否则旧向量留着按被改掉的
+    内容命中，而那比没有向量更糟。"""
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
     entry = await service.store("ch_1", "旧内容")
 
     await service.edit(entry.id, content="新内容", type=MemoryType.PREFERENCE)
 
-    assert vector.deleted == [entry.id]
-    assert vector.upserted == [entry.id], "编辑成偏好后不再 upsert"
+    assert outbox.enqueued == [
+        (entry.id, OutboxOp.UPSERT),  # store 时
+        (entry.id, OutboxOp.DELETE),  # 编辑成偏好后
+    ]
 
 
 async def test_偏好不进语义命中() -> None:
@@ -289,48 +323,45 @@ async def test_偏好不进语义命中() -> None:
     assert [h.id for h in prefs] == ["mem_pref"], "偏好经显式段返回"
 
 
-async def test_只改type为偏好时删掉旧向量() -> None:
+async def test_只改type为偏好时入队删向量() -> None:
     """向量该不该存在由 type 决定，而 type 可改 —— 只改 type 不改 content 时
-    也必须同步向量，否则旧向量残留在库里白占 top_k 名额。"""
-    vector = StubVectorStore()
-    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+    也必须入队，否则旧向量残留在库里白占 top_k 名额。
+
+    这是 `should_embed` 收口成一个函数要防的那条路径（见它的注释）。"""
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
     entry = await service.store("ch_1", "回答要简短")
-    assert vector.upserted == [entry.id], "普通记忆建了向量"
 
     await service.edit(entry.id, type=MemoryType.PREFERENCE)
 
-    assert vector.deleted == [entry.id], "改成偏好后旧向量被删"
-    updated = await service.list("ch_1")
-    assert updated[0].embedding_ref is None
+    assert outbox.enqueued[-1] == (entry.id, OutboxOp.DELETE), "改成偏好后入队删向量"
 
 
-async def test_只改type改回普通记忆时补建向量() -> None:
-    """反方向：偏好当初跳过了建索引，改回普通记忆若不补建，这条记忆永远进不了
+async def test_只改type改回普通记忆时入队补建() -> None:
+    """反方向：偏好当初连队都没入，改回普通记忆若不补入队，这条记忆永远进不了
     语义检索，只能靠时间倒序回落偶然捞到。"""
-    vector = StubVectorStore()
-    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
     entry = await service.store("ch_1", "超时是 30 秒", type=MemoryType.PREFERENCE)
-    assert vector.upserted == [], "偏好没建向量"
+    assert outbox.enqueued == [], "偏好没入队"
 
     await service.edit(entry.id, type=MemoryType.FACT)
 
-    assert vector.upserted == [entry.id], "改回普通记忆后补建了向量"
-    assert vector.upserted_content == ["超时是 30 秒"]
-    updated = await service.list("ch_1")
-    assert updated[0].embedding_ref is not None
+    assert outbox.enqueued == [(entry.id, OutboxOp.UPSERT)], "改回普通记忆后入队补建"
 
 
-async def test_只改content不跨偏好边界时不多删向量() -> None:
-    """同类型内改内容走原有路径：重算一次向量，不该因为新增的边界判定而多删。"""
-    vector = StubVectorStore()
-    service, _, _ = _service(vector=vector, embedder=StubEmbedder())
+async def test_只改content不跨偏好边界时入队重算() -> None:
+    """同类型内改内容：入一条 UPSERT，不该因为跨偏好边界的判定而入成 DELETE。"""
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
     entry = await service.store("ch_1", "超时是 30 秒", type=MemoryType.FACT)
 
     await service.edit(entry.id, content="超时是 5 秒", type=MemoryType.FACT)
 
-    assert vector.upserted == [entry.id, entry.id], "建一次 + 重算一次"
-    assert vector.upserted_content == ["超时是 30 秒", "超时是 5 秒"]
-    assert vector.deleted == [], "重算成功就不该删"
+    assert outbox.enqueued == [
+        (entry.id, OutboxOp.UPSERT),  # store
+        (entry.id, OutboxOp.UPSERT),  # 改内容后重算
+    ]
 
 
 async def test_find_similar候选含偏好() -> None:
@@ -460,21 +491,26 @@ async def test_删除不存在的条目静默返回() -> None:
 # ===== 删除时清向量 =====
 
 
-async def test_删除同时清向量索引() -> None:
-    """回归点：改造前只删 Postgres 行，向量留在库里继续被检索命中，
-    随后因取不到实体被过滤 —— 不泄露内容，但白占 top_k 名额。"""
+async def test_删除同时入队清向量() -> None:
+    """回归点：改造前只删 Postgres 行、清向量失败仅打一条 warning，向量留在库里
+    白占 top_k 名额。现在入队与删行同事务 —— 入队丢不了，删向量由 projector 重试
+    到成功。"""
     repo = FakeMemoryRepository()
     await _seed(repo, 3)
-    vector = StubVectorStore()
-    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
 
     await service.delete("mem_1")
 
-    assert vector.deleted == ["mem_1"]
+    assert outbox.enqueued == [("mem_1", OutboxOp.DELETE)]
 
 
 async def test_向量库不可用时删除仍成功() -> None:
-    """Postgres 行是权威源，它已经删了。为向量库故障而报错会让用户以为没删掉。"""
+    """Postgres 行是权威源。为向量库故障而报错会让用户以为没删掉。
+
+    改造后这条更强了:写路径压根不碰向量库，故它可用与否与删除成败无关。
+    向量的最终清除由 projector 的退避重试保证。
+    """
     repo = FakeMemoryRepository()
     await _seed(repo, 2)
     service, _, audit_repo = _service(
@@ -487,26 +523,36 @@ async def test_向量库不可用时删除仍成功() -> None:
     assert audit_repo.logs[-1].action is AuditAction.MEMORY_DELETE
 
 
-# ===== embedding_ref 回填 =====
+# ===== embedding_ref / embedded_hash 由 projector 回填 =====
+#
+# 「建索引后回填 embedding_ref」那条用例移交给 tests/unit/test_projector.py ——
+# 回填现在发生在投影侧。这里只守写路径的契约:写完之后这两个字段仍是空的。
 
 
-async def test_建索引后回填embedding_ref() -> None:
-    """回归点：这个字段此前声明了、mapper 两侧也在传，但没有任何代码写入它 ——
-    于是清理脚本里 `embedding_ref IS NULL` 恒为真。"""
+async def test_写入后向量标记仍为空() -> None:
+    """写路径不回填 embedding_ref / embedded_hash —— 它们由 projector 写。
+
+    调用方不该依赖这两个字段判断「这条能不能被语义检索到」:那是暂态，由对账
+    保证最终收敛（见 docs/plan-memory-outbox.md §5.1）。
+    """
     service, repo, _ = _service(vector=StubVectorStore(), embedder=StubEmbedder())
 
     entry = await service.store("ch_1", "某事实")
 
-    assert entry.embedding_ref == f"point-{entry.id}"
-    assert repo.stored[0].embedding_ref == f"point-{entry.id}"
+    assert entry.embedding_ref is None
+    assert entry.embedded_hash is None
+    assert repo.stored[0].embedding_ref is None
 
 
-async def test_没有向量库时embedding_ref为空() -> None:
-    service, repo, _ = _service()
+async def test_没有向量库时也照常入队() -> None:
+    """向量库缺席不影响写入 —— 意图先落库，配置补上后由对账/投影追平。"""
+    outbox = FakeOutboxRepository()
+    service, repo, _ = _service(outbox=outbox)
 
     entry = await service.store("ch_1", "某事实")
 
     assert entry.embedding_ref is None
+    assert outbox.enqueued == [(entry.id, OutboxOp.UPSERT)]
     assert repo.stored[0].embedding_ref is None
 
 
@@ -574,70 +620,85 @@ async def test_审计只留内容摘要不留全文() -> None:
     assert len(audit_repo.logs[-1].detail["old_content"]) == 50
 
 
-async def test_改内容触发向量重算() -> None:
+async def test_改内容触发入队重算() -> None:
     repo = FakeMemoryRepository()
     await _seed(repo, 1)
-    vector = StubVectorStore()
-    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
 
     await service.edit("mem_0", content="全新的内容")
 
-    assert vector.upserted_content[-1] == "全新的内容", "必须按新内容重算"
+    assert outbox.enqueued == [("mem_0", OutboxOp.UPSERT)]
 
 
-async def test_只改类型不重算向量() -> None:
-    """向量对应的是文本，类型变了不影响它 —— 白跑一次 embedding 是纯浪费。"""
+async def test_只改类型不入队() -> None:
+    """类型变了但没跨偏好边界:向量对应的是文本，文本没变就不必重算。
+
+    `_seed` 造的是 BACKGROUND_KNOWLEDGE，改成 FACT 两者都 should_embed，
+    边界没跨 —— 入队等于让 projector 白跑一次 embedding。
+    """
     repo = FakeMemoryRepository()
     await _seed(repo, 1)
-    vector = StubVectorStore()
-    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
-    before = len(vector.upserted)
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
 
     await service.edit("mem_0", type=MemoryType.FACT)
 
-    assert len(vector.upserted) == before
+    assert outbox.enqueued == []
 
 
-async def test_内容未实际变化时不重算() -> None:
+async def test_内容未实际变化时不入队() -> None:
     repo = FakeMemoryRepository()
     await _seed(repo, 1)
-    vector = StubVectorStore()
-    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
-    before = len(vector.upserted)
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=StubEmbedder(), outbox=outbox)
 
     await service.edit("mem_0", content="事实 0")  # 与原内容相同
 
-    assert len(vector.upserted) == before
+    assert outbox.enqueued == []
 
 
-async def test_重算失败时删掉旧向量而非保留() -> None:
-    """本次最要紧的一条：留着旧向量比没有索引更糟 ——
-    检索会持续按已被改掉的内容命中它。"""
+async def test_embedder坏掉不影响编辑落库() -> None:
+    """「重算失败就删旧向量」这条语义移交 projector —— 写路径压根不调 embedder，
+    所以它坏没坏与编辑成败无关。
+
+    改造前这里是最要紧的一条断言（留着旧向量比没有索引更糟，检索会持续按已被
+    改掉的内容命中）。那个保证现在由 projector 承担:它 embed 失败时删掉旧向量
+    再退避重试，对应用例在 tests/unit/test_projector.py。这里只守「写路径与
+    embedder 解耦」。
+    """
     repo = FakeMemoryRepository()
     await _seed(repo, 1)
-    vector = StubVectorStore()
     embedder = StubEmbedder()
-    service, _, _ = _service(repo, vector=vector, embedder=embedder)
-    # 先建好索引，再让 embedding 坏掉
-    await service.edit("mem_0", content="第一次改")
-    assert vector.upserted_content[-1] == "第一次改"
     embedder.broken = True
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=embedder, outbox=outbox)
 
-    edited = await service.edit("mem_0", content="第二次改")
+    edited = await service.edit("mem_0", content="改了")
 
-    assert edited is not None and edited.embedding_ref is None
-    assert vector.deleted == ["mem_0"], "旧向量必须被删掉"
+    assert edited is not None and edited.content == "改了"
+    assert outbox.enqueued == [("mem_0", OutboxOp.UPSERT)]
+    assert embedder.calls == [], "写路径不该调 embedding API"
 
 
-async def test_embedder不可用时编辑也清掉旧向量() -> None:
+async def test_embedder不可用时编辑照常入队() -> None:
+    """凭据没配也要让意图落库 —— 配上之后由投影/对账追平。
+
+    改造前这里断言的是「清掉旧向量」，那是同步双写时代的补救动作；现在
+    未配置 embedder 只意味着投影会一直排队，而 lag 指标会把这件事暴露出来。
+    """
     repo = FakeMemoryRepository()
     await _seed(repo, 1)
     vector = StubVectorStore()
-    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder(available=False))
+    outbox = FakeOutboxRepository()
+    service, _, _ = _service(
+        repo, vector=vector, embedder=StubEmbedder(available=False), outbox=outbox
+    )
 
     await service.edit("mem_0", content="改了")
 
-    assert vector.deleted == ["mem_0"]
+    assert outbox.enqueued == [("mem_0", OutboxOp.UPSERT)]
+    assert vector.deleted == [], "写路径不碰向量库"
 
 
 # ===== source 字段 =====

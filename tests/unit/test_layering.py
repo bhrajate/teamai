@@ -193,6 +193,9 @@ def test_domain_不导入三方库() -> None:
         "enum",
         "secrets",
         "time",
+        # types：给 UnitOfWork.__aexit__ 标注 TracebackType 用。标准库，
+        # 与「domain 不被外部框架污染」这条约束不冲突。
+        "types",
         "typing",
         "__future__",
     }
