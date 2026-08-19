@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 ToolBundle: TypeAlias = object
 """一份已按频道权限裁剪好的工具集。对领域层不透明，不可解构。"""
@@ -22,6 +22,14 @@ ToolBundle: TypeAlias = object
 
 class ToolProvider(ABC):
     """按频道白名单裁剪工具集。实现方负责与具体 Agent SDK 交互。"""
+
+    @abstractmethod
+    def register(self, tool: Any) -> None:
+        """注册一个工具（对领域不透明，形状由实现方与 SDK 约定）。
+
+        McpService 装载 MCP server 时经此接口补注册动态工具。
+        """
+        ...
 
     @abstractmethod
     def for_channel(self, allowed: list[str]) -> ToolBundle | None:

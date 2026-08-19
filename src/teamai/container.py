@@ -17,6 +17,7 @@ from teamai.application.conversation import ConversationService
 from teamai.application.distiller import MemoryDistiller
 from teamai.application.intent import IntentClassifier
 from teamai.application.interaction import InteractionService
+from teamai.application.mcp import McpService
 from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.projector import MemoryProjector
@@ -33,11 +34,13 @@ from teamai.domain.ports import (
     TaskQueue,
     ThreadReader,
 )
+from teamai.domain.ports.uow import UnitOfWork
 from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
     ChannelRepository,
     InteractionRepository,
+    McpServerRepository,
     MemoryRepository,
     OutboxRepository,
     PolicyRepository,
@@ -48,6 +51,7 @@ from teamai.domain.services import AuditLogWriter
 from teamai.infrastructure.dedup import build_event_deduplicator
 from teamai.infrastructure.llm.embedding import build_embedder
 from teamai.infrastructure.llm.gateway import ModelConfig, PydanticAIGateway
+from teamai.infrastructure.mcp.client import ConnectorFactory
 from teamai.infrastructure.messaging import (
     CachedThreadReader,
     FeishuPublisher,
@@ -65,6 +69,7 @@ from teamai.infrastructure.repositories import (
     SQLBudgetRepository,
     SQLChannelRepository,
     SQLInteractionRepository,
+    SQLMcpServerRepository,
     SQLMemoryRepository,
     SQLOutboxRepository,
     SQLPolicyRepository,
@@ -82,12 +87,14 @@ from teamai.infrastructure.window import build_message_window
 
 @dataclass
 class Container:
+    uow: UnitOfWork
     task_repo: TaskRepository
     memory_repo: MemoryRepository
     tag_repo: TagRepository
     policy_repo: PolicyRepository
     budget_repo: BudgetRepository
     channel_repo: ChannelRepository
+    mcp_repo: McpServerRepository
     audit_repo: AuditRepository
     interaction_repo: InteractionRepository
     queue: TaskQueue
@@ -117,6 +124,7 @@ class Container:
     distiller: MemoryDistiller
     tags: TagResolver
     channels: ChannelService
+    mcp: McpService
     runtime: AgentRuntime
     router: MessageRouter
     tools: ToolRegistry
@@ -132,6 +140,8 @@ class Container:
         # 注册表；容器是组合根，允许持有该具体类型。
         await self.publisher.aclose()  # type: ignore[attr-defined]
         await self.thread_reader.aclose()  # type: ignore[attr-defined]
+        # MCP 长活会话：worker 启动装载后持有，退出时一并关闭
+        await self.mcp.aclose()
 
 
 def _dialect() -> str:
@@ -174,6 +184,7 @@ def build_container() -> Container:
     policy_repo = SQLPolicyRepository(session)
     budget_repo = SQLBudgetRepository(session)
     channel_repo = SQLChannelRepository(session)
+    mcp_repo = SQLMcpServerRepository(session)
     audit_repo = SQLAuditRepository(session)
     interaction_repo = SQLInteractionRepository(session)
 
@@ -255,6 +266,9 @@ def build_container() -> Container:
     channels = ChannelService(channel_repo, policy_repo, audit)
 
     tools = build_tools()
+    # MCP server 的装载是启动后的异步步骤（worker 引导处调用 load_and_register），
+    # 这里只装配服务本身；web 进程不装载，故不存在会话泄漏。
+    mcp = McpService(mcp_repo, tools, uow, ConnectorFactory())
     runtime = AgentRuntime(gateway, tools, budget, audit, settings, interactions)
     intent = IntentClassifier()
     router = MessageRouter(
@@ -271,12 +285,14 @@ def build_container() -> Container:
     )
 
     return Container(
+        uow=uow,
         task_repo=task_repo,
         memory_repo=memory_repo,
         tag_repo=tag_repo,
         policy_repo=policy_repo,
         budget_repo=budget_repo,
         channel_repo=channel_repo,
+        mcp_repo=mcp_repo,
         audit_repo=audit_repo,
         interaction_repo=interaction_repo,
         queue=queue,
@@ -297,6 +313,7 @@ def build_container() -> Container:
         distiller=distiller,
         tags=tags,
         channels=channels,
+        mcp=mcp,
         runtime=runtime,
         router=router,
         tools=tools,

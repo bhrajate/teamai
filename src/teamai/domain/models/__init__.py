@@ -15,6 +15,7 @@ from teamai.domain.models.budget import (
 )
 from teamai.domain.models.channel import ChannelInstance
 from teamai.domain.models.interaction import AgentInteraction, InteractionResult
+from teamai.domain.models.mcp import McpServer
 from teamai.domain.models.memory import MemoryEntry, MemorySource, MemoryType, should_embed
 from teamai.domain.models.outbox import OutboxEntry, OutboxOp
 from teamai.domain.models.policy import AmbientRule, PermissionPolicy
@@ -34,6 +35,7 @@ __all__ = [
     "ChannelInstance",
     "InteractionResult",
     "InvalidTransition",
+    "McpServer",
     "MemoryEntry",
     "MemorySource",
     "MemoryType",

@@ -16,6 +16,11 @@ from teamai.domain.ports.cooldown import AmbientCooldown
 from teamai.domain.ports.dedup import EventDeduplicator
 from teamai.domain.ports.embedding import Embedder
 from teamai.domain.ports.llm import LLMGateway, LLMResult, TokenBudgetExceeded
+from teamai.domain.ports.mcp import (
+    McpConnectionError,
+    McpConnectorFactory,
+    McpSessionPort,
+)
 from teamai.domain.ports.messaging import MessagePublisher, ReplyTarget
 from teamai.domain.ports.metrics import MetricsSink, NullMetricsSink
 from teamai.domain.ports.queue import QueuePayload, TaskQueue
@@ -28,6 +33,9 @@ __all__ = [
     "EventDeduplicator",
     "LLMGateway",
     "LLMResult",
+    "McpConnectionError",
+    "McpConnectorFactory",
+    "McpSessionPort",
     "MessagePublisher",
     "MessageWindow",
     "MetricsSink",

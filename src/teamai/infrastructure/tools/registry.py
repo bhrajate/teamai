@@ -57,13 +57,41 @@ class ToolRegistry(ToolProvider):
     def names(self) -> list[str]:
         return list(self._tools.keys())
 
+    @staticmethod
+    def _is_server_entry(name: str) -> bool:
+        """白名单条目是否为 server 级挂载（``mcp__<server>``，恰好一段）。
+
+        McpServer.name 只允许 ``[a-z0-9-]``，不会含 ``__``，故分隔符计数可靠：
+        一段是 server 级条目，两段是完整工具名。
+        """
+        return name.startswith("mcp__") and name.count("__") == 1
+
+    def _expand_allowed(self, allowed: list[str]) -> list[str]:
+        """把白名单展开成精确工具名列表。
+
+        - ``mcp__<server>`` → server 级挂载，展开为该 server 注册的全部工具
+        - 完整工具名（``mcp__<server>__<tool>`` 或内置名）→ 原样保留
+        - 未注册名字保留给下方过滤（策略里可能残留已下线或未连上的 server 名，
+          展开结果为空即被自然忽略）
+        """
+        expanded: list[str] = []
+        for name in allowed:
+            if self._is_server_entry(name):
+                prefix = f"{name}__"
+                expanded.extend(t for t in self._tools if t.startswith(prefix))
+            else:
+                expanded.append(name)
+        return expanded
+
     def for_channel(self, allowed: list[str]) -> ToolBundle | None:
         """按白名单裁出工具集。返回值对上层不透明，只有 gateway 会解释它。
 
         未注册的名字直接忽略（策略里可能残留已下线的工具名）。白名单为空或
         全部未命中时返回 ``None``，表示本次调用不挂任何工具。
         """
-        selected = [tool for name in allowed if (tool := self._tools.get(name)) is not None]
+        selected = [
+            tool for name in self._expand_allowed(allowed) if (tool := self._tools.get(name)) is not None
+        ]
         if not selected:
             return None
         return _GracefulToolset(FunctionToolset(selected))

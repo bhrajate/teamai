@@ -283,6 +283,10 @@ async def _main() -> None:
         with contextlib.suppress(NotImplementedError):  # Windows 不支持
             loop.add_signal_handler(sig, stop.set)
 
+    # MCP server 装载：改配置后重启 worker 即生效（重启生效的决策见 SPEC）。
+    # 单个 server 连接失败不阻塞启动，last_error 落库、前端可见。
+    await container.mcp.load_and_register()
+
     register_jobs(container)
     scheduler.start()
     logger.info("Scheduler 已启动")

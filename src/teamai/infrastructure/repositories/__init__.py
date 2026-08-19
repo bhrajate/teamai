@@ -10,6 +10,7 @@ from teamai.infrastructure.repositories.audit import SQLAuditRepository
 from teamai.infrastructure.repositories.budget import SQLBudgetRepository
 from teamai.infrastructure.repositories.channel import SQLChannelRepository
 from teamai.infrastructure.repositories.interaction import SQLInteractionRepository
+from teamai.infrastructure.repositories.mcp import SQLMcpServerRepository
 from teamai.infrastructure.repositories.memory import SQLMemoryRepository
 from teamai.infrastructure.repositories.outbox import SQLOutboxRepository
 from teamai.infrastructure.repositories.policy import SQLPolicyRepository
@@ -21,6 +22,7 @@ __all__ = [
     "SQLBudgetRepository",
     "SQLChannelRepository",
     "SQLInteractionRepository",
+    "SQLMcpServerRepository",
     "SQLMemoryRepository",
     "SQLOutboxRepository",
     "SQLPolicyRepository",

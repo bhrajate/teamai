@@ -13,11 +13,31 @@ from teamai.domain.models import (
     AuditLog,
     BudgetQuota,
     ChannelInstance,
+    McpServer,
     MemoryEntry,
     PermissionPolicy,
     TagTemplate,
     Task,
 )
+
+# headers 中表示「保留原值」的占位值（见 mcp.py 路由的更新语义）
+HEADER_PLACEHOLDER = "***"
+
+
+def mcp_server_to_dict(server: McpServer) -> dict[str, Any]:
+    """headers 一律脱敏回显 —— 凭据经前端往返一次就暴露一份，不该出现在任何
+    响应里；更新时填 ``***`` 表示保留原值（见 build_mcp_router.set_server）。"""
+    return {
+        "id": server.id,
+        "channel_instance_id": server.channel_instance_id,
+        "name": server.name,
+        "url": server.url,
+        "headers": {k: HEADER_PLACEHOLDER for k in server.headers},
+        "enabled": server.enabled,
+        "last_error": server.last_error,
+        "created_at": server.created_at.isoformat(),
+        "updated_at": server.updated_at.isoformat(),
+    }
 
 
 def channel_to_dict(instance: ChannelInstance) -> dict[str, Any]:
