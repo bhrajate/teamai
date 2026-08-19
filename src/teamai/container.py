@@ -210,6 +210,10 @@ def build_container() -> Container:
     # 记忆检索一直走无界全表扫描的回落路径。未配置凭据时装的是 NullEmbedder，
     # 它显式报 available=False，缺失是可见的。
     embedder = build_embedder(settings)
+    # 装配时上报一次可用性。放在这里而不是各进程的 main：web 与 worker 都经由
+    # build_container 起来，埋在这里两边自动都有 —— 而分别在两个 main 里调，
+    # 漏掉一个的表现是「看板显示可用，实际那个进程在降级」。
+    PrometheusMetricsSink().embedder_state(available=embedder.available)
     # 集合维度跟随 embedder，不再硬编码 384（那与常见模型的 1536 不匹配）
     vector_store = build_vector_store(embedder.dimensions)
     gateway = PydanticAIGateway(ModelConfig.from_settings(settings))

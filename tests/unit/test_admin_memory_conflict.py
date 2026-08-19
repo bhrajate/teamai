@@ -25,6 +25,7 @@ from teamai.adapters.admin.memory import build_memory_router
 from teamai.application.memory import MemoryService
 from teamai.domain.models import MemoryEntry, MemorySource, MemoryType
 from teamai.domain.services import AuditLogWriter
+from teamai.infrastructure.llm.embedding import NullEmbedder
 from teamai.infrastructure.uow import NullUnitOfWork
 from tests.fakes import (
     FakeAuditRepository,
@@ -54,7 +55,11 @@ def _client(
         embedder=embedder,
     )
     app = FastAPI()
-    app.include_router(build_memory_router(SimpleNamespace(memory=service)), prefix="/api")
+    # 替身容器只给路由真正用到的两样。`embedder` 是 `/embedding` 端点要的 ——
+    # 传 `embedder or NullEmbedder()` 而不是 None：那个端点会读 `.available`，
+    # 给 None 会 AttributeError，而「未配 embedding」的真实装配正是 NullEmbedder。
+    container = SimpleNamespace(memory=service, embedder=embedder or NullEmbedder())
+    app.include_router(build_memory_router(container), prefix="/api")
     return TestClient(app), service, audit_repo
 
 
@@ -262,6 +267,39 @@ def test_写偏好不触发冲突检查(repo: FakeMemoryRepository) -> None:
 
     assert resp.status_code == 200
     assert len(repo.stored) == 2
+
+
+# ===== embedder 可用性 =====
+#
+# 锁的问题：未配 embedding 的后果有三层（语义检索关闭 / 冲突检查退化为字面比对 /
+# 蒸馏去重对旧记忆失效），而此前它只体现在一条启动期 info 日志里 —— 那条日志滚掉
+# 之后没人知道，而后果要几周才从回答质量上看出来。
+
+
+def test_embedding端点报可用(repo: FakeMemoryRepository) -> None:
+    client, _, _ = _client(repo, vector=StubVectorStore(), embedder=StubEmbedder())
+
+    body = client.get("/api/embedding").json()
+
+    assert body["available"] is True
+    assert body["dimensions"] == 3
+
+
+def test_embedding端点报不可用(repo: FakeMemoryRepository) -> None:
+    """未配 embedding 时（默认装配就是 NullEmbedder）控制台据此挂提示。"""
+    client, _, _ = _client(repo)
+
+    body = client.get("/api/embedding").json()
+
+    assert body["available"] is False
+
+
+def test_embedding端点带上模型名(repo: FakeMemoryRepository) -> None:
+    """「检索质量怎么变差了」的第一个问题就是配的哪个模型 —— 换过模型而没重建索引
+    时向量是旧模型算的，而那种偏差对账查不出来（标记全自洽）。"""
+    client, _, _ = _client(repo, vector=StubVectorStore(), embedder=StubEmbedder())
+
+    assert "model" in client.get("/api/embedding").json()
 
 
 # ===== 既有行为不受影响 =====

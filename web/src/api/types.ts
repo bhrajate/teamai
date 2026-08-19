@@ -112,6 +112,21 @@ export type MemoryConflict = {
   score: number | null
 }
 
+/**
+ * embedder 的装配状态（`GET /api/embedding`）。
+ *
+ * `available` 为假时记忆能力有三层降级，见 `infrastructure/llm/embedding.py` 的
+ * `_DEGRADED_CONSEQUENCES`：语义检索关闭、手工写入的冲突检查退化为字面比对、
+ * 蒸馏的去重与取代对旧记忆基本失效。第三层最贵 —— 它让记忆库持续劣化，而且要
+ * 几周才从回答质量上看出来。
+ */
+export type EmbeddingState = {
+  available: boolean
+  /** 配的是哪个模型。换过模型而没重建索引时向量是旧模型算的，对账查不出来。 */
+  model: string | null
+  dimensions: number
+}
+
 /** 手工写入撞上冲突时 409 的 detail。 */
 export type MemoryConflictDetail = {
   message: string

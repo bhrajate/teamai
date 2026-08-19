@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from teamai.adapters.admin.serializers import memory_to_dict
 from teamai.application.memory import ConflictCheck
+from teamai.config import settings
 from teamai.container import Container
 from teamai.domain.models import AuditAction, MemorySource, MemoryType
 
@@ -61,6 +62,28 @@ def _conflict_detail(check: ConflictCheck) -> dict[str, Any]:
 
 def build_memory_router(container: Container) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/embedding")
+    async def embedding_state() -> dict[str, Any]:
+        """embedder 是否可用。控制台据此在记忆页提示降级。
+
+        为什么不放 `/health`：那个端点**匿名可打**（探针与 make verify-* 要用），
+        而「这个部署有没有配 embedding」是运营信息。放进去等于为了省一个端点而把
+        匿名面扩宽一点，而 README 里刚说了 `/metrics` 暴露运营信息应在反代限制来源
+        —— 两处的取舍该一致。故跟 `/tools` 一路：受令牌保护的只读非资源端点。
+
+        为什么控制台需要它而不是看日志：那条 warning 只在启动时打一次，滚掉之后
+        没人知道；而降级的后果（记忆库持续劣化）要几周才从回答质量上看出来。
+        """
+        embedder = container.embedder
+        return {
+            "available": embedder.available,
+            # 配了哪个模型。「检索质量怎么变差了」的第一个问题就是这个 ——
+            # 换过模型而没重建索引时，向量是旧模型算的（对账查不出，见
+            # scripts/rebuild_memory_vectors.py）。
+            "model": settings.embedding_model or None,
+            "dimensions": embedder.dimensions,
+        }
 
     @router.get("/channels/{channel_instance_id}/memories")
     async def list_memories(

@@ -20,6 +20,23 @@ from teamai.domain.ports import Embedder
 
 logger = logging.getLogger(__name__)
 
+# 没有 embedding 时到底失去了什么。
+#
+# 这段话值得写全并且用 warning 而不是 info：前两条是「这次回答差一点」，第三条是
+# **记忆库会持续劣化**，而且要几周才看得出来。此前这里只说「语义检索关闭」，
+# 而那是三层后果里最轻的一层。
+#
+# 第三条的机制：蒸馏靠 `MemoryService.find_similar` 取候选给模型比对，没有向量时
+# 它回落成「最近 10 条」—— 于是三个月前那条「超时 3 秒」永远进不了候选，模型看不到
+# 冲突就判 ADD，两条并列成为现行。去重与取代对旧记忆基本是瞎的。
+_DEGRADED_CONSEQUENCES = (
+    "装 NullEmbedder。三层后果："
+    "① 语义检索关闭，记忆检索回落到按时间倒序取最近若干条；"
+    "② 手工写入的冲突检查退化为字面比对，语义上矛盾的记忆查不出来；"
+    "③ 蒸馏的去重与取代对旧记忆基本失效（候选退化成「最近 10 条」，"
+    "更早的矛盾记忆进不了比对，会持续并列堆积）。"
+)
+
 
 class NullEmbedder(Embedder):
     """不产出向量的空实现。维度取一个常见值，但不会被用到。"""
@@ -97,10 +114,11 @@ def build_embedder(settings: Settings) -> Embedder:
     `embedding_api_key` 覆盖。
     """
     if not settings.embedding_model:
+        logger.warning(f"未配置 embedding_model，{_DEGRADED_CONSEQUENCES}")
         return NullEmbedder()
     api_key = settings.embedding_api_key or settings.llm_api_key
     if not api_key:
-        logger.info("未配置 embedding 凭据，语义检索关闭（记忆检索回落到时间倒序）")
+        logger.warning(f"未配置 embedding 凭据，{_DEGRADED_CONSEQUENCES}")
         return NullEmbedder()
     return OpenAICompatibleEmbedder(
         model=settings.embedding_model,

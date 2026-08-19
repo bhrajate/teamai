@@ -11,6 +11,7 @@ import type {
   Budget,
   BudgetPeriod,
   Channel,
+  EmbeddingState,
   Interaction,
   Memory,
   MemoryType,
@@ -86,6 +87,15 @@ export const memoryApi = {
       method: 'DELETE',
       query: { actor },
     }),
+
+  /**
+   * embedder 是否可用。不可用时记忆能力有三层降级（语义检索关闭、写入的冲突检查
+   * 退化为字面比对、蒸馏的去重对旧记忆失效），记忆页据此挂提示。
+   *
+   * 受令牌保护而非挂在匿名的 `/health` 上：「这个部署有没有配 embedding」是运营
+   * 信息。所以这里不能像 healthApi 那样当探针用。
+   */
+  embedding: (signal?: AbortSignal) => request<EmbeddingState>('/embedding', { signal }),
 }
 
 /** admin/budget.py。未配额度时 GET 返回 404，调用方按 isNotFound 分支处理。 */

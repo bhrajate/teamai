@@ -31,6 +31,9 @@ EXPECTED_ROUTES = {
     # 记忆的编辑走 PATCH（原地改，保留 id 与 created_at）。有意不支持改
     # visibility —— 那属权限变更而非内容编辑。
     ("PATCH", "/api/memories/{entry_id}"),
+    # embedder 可用性。受令牌保护而非挂在匿名的 /health 上：「这个部署有没有配
+    # embedding」是运营信息，与 /metrics 的取舍一致。控制台据此在记忆页提示降级。
+    ("GET", "/api/embedding"),
     ("GET", "/api/channels/{channel_instance_id}/tasks"),
     # 交互记录只读：由 AgentRuntime 执行时产生，人工写入会污染审计与成本统计；
     # 删除走 worker 的保留期巡检，不给手动入口。

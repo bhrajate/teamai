@@ -54,6 +54,21 @@ class MetricsSink(ABC):
         """
         ...
 
+    @abstractmethod
+    def embedder_state(self, *, available: bool) -> None:
+        """记录 embedder 是否可用。装配时调一次，两个进程各报自己那份。
+
+        与其余四个不同，这是**静态能力**而不是运行速率 —— 值只在重启时可能变。
+        它仍然值得是个指标：没有 embedding 时记忆库会持续劣化（蒸馏的候选退化成
+        「最近 10 条」，更早的矛盾记忆进不了比对而并列堆积），而这件事要几周才从
+        回答质量上看出来。日志里那条 warning 只在启动时出现一次，滚掉之后就没人
+        知道了；一条恒为 0 的时间序列才能让告警规则挂上去。
+
+        为什么不做成「查一下就知道」：`/metrics` 被抓时去问 embedder 等于让抓取端
+        触发外部调用，与 `outbox_state` 主动回写同一个理由。
+        """
+        ...
+
 
 class NullMetricsSink(MetricsSink):
     """不上报的实现。给单测与「没配指标」的部署用。
@@ -73,4 +88,7 @@ class NullMetricsSink(MetricsSink):
         return None
 
     def reconciled(self, *, direction: str, count: int) -> None:
+        return None
+
+    def embedder_state(self, *, available: bool) -> None:
         return None

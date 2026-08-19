@@ -90,6 +90,18 @@ reconcile_total = Counter(
     ["direction"],
 )
 
+embedder_available = Gauge(
+    "teamai_embedder_available",
+    # 为 0 时记忆库会持续劣化：蒸馏的候选退化成「最近 10 条」，更早的矛盾记忆
+    # 进不了比对而并列堆积，而这件事要几周才从回答质量上看出来。
+    "embedder 是否可用（0 表示装的是 NullEmbedder，语义检索与去重均降级）",
+    # ⚠️ 这个用 'min' 而不是 _GAUGE_MODE('liveall')。两个进程各报自己那份，
+    # 而它们的配置**可能不同**（worker 配了、web 没配，或反过来）—— 'liveall' 会
+    # 让后写入的那份盖掉另一份，于是「有一个进程降级了」这件事被抹掉。
+    # 取 min 让任一进程降级都显示为 0，符合「告警要报最坏的那个」。
+    multiprocess_mode="min",
+)
+
 
 def build_metrics_asgi_app():
     """给 web 挂 `/metrics` 用的 ASGI app。
@@ -147,6 +159,12 @@ class PrometheusMetricsSink(MetricsSink):
             reconcile_total.labels(direction=direction).inc(count)
         except Exception as exc:  # pragma: no cover
             logger.debug(f"上报对账结果失败: {exc}")
+
+    def embedder_state(self, *, available: bool) -> None:
+        try:
+            embedder_available.set(1 if available else 0)
+        except Exception as exc:  # pragma: no cover
+            logger.debug(f"上报 embedder 可用性失败: {exc}")
 
 
 def mark_process_exit() -> None:

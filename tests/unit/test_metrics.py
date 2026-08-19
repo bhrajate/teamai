@@ -117,6 +117,7 @@ def test_上报点全都不抛(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Non
     sink.projected(op="UPSERT", result="upserted")
     sink.embed_duration(0.123)
     sink.reconciled(direction="upsert", count=3)
+    sink.embedder_state(available=False)
     mark_process_exit()
 
 
@@ -129,11 +130,30 @@ def test_null实现全都不抛() -> None:
     sink.projected(op="DELETE", result="deleted")
     sink.embed_duration(1.0)
     sink.reconciled(direction="delete", count=0)
+    sink.embedder_state(available=True)
 
 
 def test_未设目录时清理是noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(MULTIPROC_ENV, raising=False)
     mark_process_exit()
+
+
+def test_embedder可用性用min聚合而非liveall() -> None:
+    """回归点：这个 Gauge 的多进程聚合必须是 `min`，不能跟其余 Gauge 一样用
+    `liveall`。
+
+    web 与 worker 各报自己那份，而两者的配置**可能不同**（worker 配了 embedding、
+    web 没配，或反过来 —— 两个进程读同一份配置，但环境变量可以只在一边设）。
+    `liveall` 取最后写入的那份，于是「有一个进程在降级」这件事会被另一个进程的
+    上报抹掉，看板显示可用而实际半边瘫着。取 min 让任一进程降级都显示为 0。
+
+    这条守卫存在是因为后来者很可能为了「和别的 Gauge 一致」把它改回 liveall ——
+    与 test_vector.py 里那条「别把 query 也改成抛」同一类。
+    """
+    from teamai.infrastructure.metrics import embedder_available, outbox_pending
+
+    assert embedder_available._multiprocess_mode == "min"
+    assert outbox_pending._multiprocess_mode == "liveall", "其余 Gauge 仍是 liveall"
 
 
 def test_sink实现了端口的全部方法() -> None:

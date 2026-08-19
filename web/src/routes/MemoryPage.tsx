@@ -18,11 +18,11 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { memoryApi } from '@/api'
 import { ApiError } from '@/api/client'
-import type { Memory, MemoryConflictDetail, MemoryType } from '@/api/types'
+import type { EmbeddingState, Memory, MemoryConflictDetail, MemoryType } from '@/api/types'
 import { readMemoryConflictDetail } from '@/api/types'
 import { EntityId } from '@/components/EntityId'
 import { PageHeader } from '@/components/PageHeader'
@@ -164,6 +164,20 @@ export function MemoryPage() {
     ),
     [channelId, includeSuperseded],
   )
+
+  // embedder 装配状态。单独取而不并进 state：它与频道无关（切频道不必重取），
+  // 而且取失败不该让整页进错误态 —— 那只是少一条提示。
+  const [embedding, setEmbedding] = useState<EmbeddingState | null>(null)
+  useEffect(() => {
+    const ctrl = new AbortController()
+    void memoryApi
+      .embedding(ctrl.signal)
+      .then(setEmbedding)
+      .catch(() => {
+        // 静默：拿不到状态时不挂提示，比挂一条可能是错的提示好
+      })
+    return () => ctrl.abort()
+  }, [])
 
   const closeModal = () => {
     setOpen(false)
@@ -410,6 +424,28 @@ export function MemoryPage() {
           </Space>
         }
       />
+
+      {/* 未配 embedding 时的降级提示。三层后果里第三层最要紧 —— 前两层是「这次
+          差一点」，第三层是记忆库会持续劣化，而且要几周才从回答质量上看出来。
+          此前这件事只在启动日志里出现一次，滚掉就没人知道了。 */}
+      {embedding && !embedding.available && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBlockEnd: 16 }}
+          title="未配置 embedding，记忆能力处于降级状态"
+          description={
+            <>
+              <div>· 语义检索关闭，只能按时间倒序取最近若干条</div>
+              <div>· 手工写入的冲突检查退化为字面比对，说法不同但意思相同的查不出来</div>
+              <div>
+                · 自动蒸馏的去重与取代对旧记忆基本失效 —— 比对候选退化成「最近 10
+                条」，更早的矛盾记忆进不了比对，会持续并列堆积
+              </div>
+            </>
+          }
+        />
+      )}
 
       <AsyncBoundary state={state} skeletonRows={6}>
         {(list) =>

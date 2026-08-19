@@ -136,6 +136,7 @@ worker 里两个定时任务都不可缺：预算周期重置（否则耗尽配�
 | `GET /api/health` | 健康检查 |
 | `GET /api/channels`、`GET/PATCH /api/channels/{id}` | 频道实例：列举、详情、改频道级开关 |
 | `GET /api/tools` | 已注册的工具名，供策略编辑器出选项 |
+| `GET /api/embedding` | embedder 装配状态（`available` / `model` / `dimensions`）。不可用时记忆能力三层降级：语义检索关闭、手工写入的冲突检查退化为字面比对、蒸馏的去重与取代对旧记忆基本失效。控制台据此在记忆页挂提示；看板看 `teamai_embedder_available`。受令牌保护而非挂在匿名的 `/health` 上 —— 「有没有配 embedding」是运营信息 |
 | `GET/POST /api/channels/{id}/memories`、`PATCH/DELETE /api/memories/{entry_id}` | 频道记忆：列举、手工写入、改内容或类型、删除。改内容会**异步**重算向量索引（入队交给 worker 的投影器，故写入立刻返回、不等 embedding API）；有意不支持改可见性（`private`→`channel` 属权限变更而非内容编辑）。**写入撞上疑似重复的现行记忆时返回 409** 并带候选列表，需带 `supersede_id`（取代那条）或 `force`（并列写入）重发，两者同时给报 400；未配 embedding 时这道检查退化为字面比对，409 里 `degraded=true` |
 | `GET /metrics` | Prometheus 指标。与 `/health` 一样在 Admin 令牌保护之外（抓取端是 Prometheus 而非人），但它暴露运营信息，生产应在反向代理层限来源。⚠️ 需设 `PROMETHEUS_MULTIPROC_DIR` 且 web 与 worker 指向同一目录，否则投影指标一律为 0 —— 不报错，症状是「看起来一切正常」 |
 | `GET/PUT /api/channels/{id}/budget` | token 预算 |
