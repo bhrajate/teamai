@@ -1,4 +1,5 @@
 import {
+  ApiOutlined,
   AuditOutlined,
   BulbOutlined,
   DatabaseOutlined,
@@ -30,6 +31,7 @@ const RESOURCE_ITEMS = [
   { key: 'budget', icon: <WalletOutlined />, label: '预算' },
   { key: 'policy', icon: <SafetyCertificateOutlined />, label: '权限策略' },
   { key: 'tags', icon: <TagsOutlined />, label: '标签' },
+  { key: 'mcp', icon: <ApiOutlined />, label: 'MCP 服务器' },
   // 交互记录紧邻审计：两者都是留痕,但前者答「模型看到了什么」,后者答「做了什么动作」
   { key: 'interactions', icon: <MessageOutlined />, label: '交互记录' },
   { key: 'audit', icon: <AuditOutlined />, label: '审计' },

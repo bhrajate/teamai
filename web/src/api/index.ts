@@ -13,6 +13,8 @@ import type {
   Channel,
   EmbeddingState,
   Interaction,
+  McpServer,
+  McpTestResult,
   Memory,
   MemoryType,
   Policy,
@@ -174,4 +176,23 @@ export const tagApi = {
 /** admin/__init__.py 的 /health。匿名可打，用来判后端是否在线。 */
 export const healthApi = {
   check: (signal?: AbortSignal) => request<{ status: string }>('/health', { signal }),
+}
+
+/** admin/mcp.py —— MCP server 管理。 */
+export const mcpApi = {
+  list: (channelId: string, signal?: AbortSignal) =>
+    request<McpServer[]>(`/channels/${channelId}/mcp-servers`, { signal }),
+
+  create: (channelId: string, body: { name: string; url: string; headers?: Record<string, string>; enabled?: boolean }) =>
+    request<McpServer>(`/channels/${channelId}/mcp-servers`, { method: 'POST', body }),
+
+  update: (channelId: string, serverId: string, body: Partial<Pick<McpServer, 'name' | 'url' | 'headers' | 'enabled'>>) =>
+    request<McpServer>(`/channels/${channelId}/mcp-servers/${serverId}`, { method: 'PUT', body }),
+
+  remove: (channelId: string, serverId: string) =>
+    request<{ ok: boolean }>(`/channels/${channelId}/mcp-servers/${serverId}`, { method: 'DELETE' }),
+
+  /** 连接测试：传 url + headers，成功返回该 server 暴露的工具名。 */
+  test: (channelId: string, body: { url: string; headers?: Record<string, string> }) =>
+    request<McpTestResult>(`/channels/${channelId}/mcp-servers/test`, { method: 'POST', body }),
 }

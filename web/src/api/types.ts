@@ -250,3 +250,27 @@ export type Tag = {
   active: boolean
   created_by: string | null
 }
+
+/**
+ * domain/models/mcp.py McpServer —— MCP server 配置。
+ *
+ * ⚠️ headers 在后端已被脱敏：任何响应里都只有值为 `***` 的占位（真值不离开
+ * 后端），创建/更新时提交 `***` 表示保留原值、空串表示删除该键。
+ */
+export type McpServer = {
+  id: string
+  channel_instance_id: string
+  name: string
+  url: string
+  headers: Record<string, string>
+  enabled: boolean
+  /** worker 启动时的连接失败快照，非实时探活。null 表示最近一次启动连上了（或从未装载）。 */
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** 连接测试的结果。tools 为 server 暴露的工具名（原名，不带前缀）。 */
+export type McpTestResult = {
+  tools: string[]
+}

@@ -10,6 +10,7 @@ import { AuditPage } from '@/routes/AuditPage'
 import { BudgetPage } from '@/routes/BudgetPage'
 import { ChannelListPage } from '@/routes/ChannelListPage'
 import { InteractionPage } from '@/routes/InteractionPage'
+import { McpServerPage } from '@/routes/McpServerPage'
 import { MemoryPage } from '@/routes/MemoryPage'
 import { NotFoundPage } from '@/routes/NotFoundPage'
 import { OverviewPage } from '@/routes/OverviewPage'
@@ -59,6 +60,7 @@ export function App() {
               <Route path="/channels/:channelId/budget" element={<BudgetPage />} />
               <Route path="/channels/:channelId/policy" element={<PolicyPage />} />
               <Route path="/channels/:channelId/tags" element={<TagPage />} />
+              <Route path="/channels/:channelId/mcp" element={<McpServerPage />} />
               <Route path="/channels/:channelId/interactions" element={<InteractionPage />} />
               <Route path="/channels/:channelId/audit" element={<AuditPage />} />
               <Route path="/settings" element={<SettingsPage />} />
