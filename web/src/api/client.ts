@@ -15,12 +15,25 @@ export class ApiError extends Error {
   readonly status: number
   /** 后端 detail 字段；FastAPI 的 HTTPException 与校验错误都落在这里。 */
   readonly detail: string
+  /**
+   * 原始响应体，未做任何解读。
+   *
+   * `detail` 是拍平成一句话的结果，够用于「弹个错误提示」，但有些失败自带调用方
+   * 要用的结构化数据 —— 记忆写入的 409 会带一份候选冲突列表（见
+   * `adapters/admin/memory.py` 的 `_conflict_detail`），页面靠它渲染选择界面。
+   *
+   * 刻意留成 `unknown` 并且不在这里加 `conflicts` 之类的取值器：本文件的职责是
+   * 「把各种失败归一」，塞进领域概念就破了它自己的边界（见文件头）。要用的页面
+   * 自己按类型收窄。
+   */
+  readonly body: unknown
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, body?: unknown) {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.body = body
   }
 
   /** 401：令牌缺失或不对，调用方据此引导去「设置」页。 */
@@ -34,12 +47,21 @@ export class ApiError extends Error {
   }
 }
 
-/** 把 FastAPI 的 detail 读成一句话。422 的 detail 是数组，得摊平。 */
+/**
+ * 把 FastAPI 的 detail 读成一句话。422 的 detail 是数组，得摊平；
+ * 结构化的 detail（记忆写入 409）是对象，取它的 message 字段。
+ */
 function readDetail(body: unknown, status: number): string {
   if (typeof body === 'string' && body) return body
   if (body && typeof body === 'object' && 'detail' in body) {
     const d = (body as { detail: unknown }).detail
     if (typeof d === 'string') return d
+    // 对象形态的 detail。不加这个分支的话，带结构化数据的失败会一路掉到底部的
+    // 兜底文案「请求失败（HTTP 409）」—— 后端明明给了一句人话却显示不出来。
+    if (d && typeof d === 'object' && !Array.isArray(d) && 'message' in d) {
+      const msg = (d as { message: unknown }).message
+      if (typeof msg === 'string' && msg) return msg
+    }
     if (Array.isArray(d)) {
       const parts = d
         .map((item) => {
@@ -108,6 +130,6 @@ export async function request<T>(path: string, options: Options = {}): Promise<T
     }
   }
 
-  if (!resp.ok) throw new ApiError(resp.status, readDetail(parsed, resp.status))
+  if (!resp.ok) throw new ApiError(resp.status, readDetail(parsed, resp.status), parsed)
   return parsed as T
 }

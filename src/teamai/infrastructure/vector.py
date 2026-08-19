@@ -33,7 +33,27 @@ class VectorStore(Protocol):
         """
         ...
 
-    async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]: ...
+    async def query(
+        self, channel_instance_id: str, embedding: list[float], top_k: int
+    ) -> list[tuple[str, float]]:
+        """检索，返回 `(entry_id, 相似度)` 按相似度降序。
+
+        带分数而不是只给 id：手工写入的冲突检查要按阈值判「像到该拦下来」
+        （`MemoryService.find_conflicts`），没有分数就没有判据。检索本身不需要
+        分数，`_semantic_hits` 显式丢掉。
+
+        为什么不另加一个 `query_scored`：两个近似方法必须返回一致的结果，而这个
+        仓库在「两处等价逻辑会静默分叉」上有过教训 —— `should_embed()` 与对账的
+        SQL 谓词那一对，注释里写着分叉的后果是烧钱的死循环。宁可让不需要分数的
+        调用方丢掉它。
+
+        分数的含义取决于建集合时的距离度量，当前是 Cosine，故取值在 [0,1]、越大
+        越像。换度量必须同步改 `memory_conflict_threshold` 的默认值 —— 那个阈值
+        是按余弦定的，换成 Euclid 之后「大于阈值算冲突」的方向都是反的。
+
+        失败**返回空**，不抛。见类文档。
+        """
+        ...
 
     async def delete(self, entry_id: str) -> None:
         """删掉某条记忆的向量。
@@ -122,12 +142,17 @@ class QdrantVectorStore:
         )
         return point_id
 
-    async def query(self, channel_instance_id: str, embedding: list[float], top_k: int) -> list[str]:
+    async def query(
+        self, channel_instance_id: str, embedding: list[float], top_k: int
+    ) -> list[tuple[str, float]]:
         """检索。与写操作不同，这里**不抛**：Qdrant 不可用时返回空，由
         `MemoryService._semantic_hits` 回落到时间倒序。
 
         读写两种降级取向相反是有意的：检索失败只影响单次回答的质量，写失败会丢
         数据。见类文档。
+
+        返回 `(entry_id, score)`。Qdrant 的 `ScoredPoint.score` 在 Cosine 度量下
+        就是余弦相似度，直接透出，不做归一 —— 归一会掩盖度量换了这件事。
         """
         if self._client is None:
             await self._ensure_client()
@@ -141,7 +166,7 @@ class QdrantVectorStore:
             },
             limit=top_k,
         ).points
-        return [h.payload["entry_id"] for h in hits]
+        return [(h.payload["entry_id"], float(h.score)) for h in hits]
 
     async def delete(self, entry_id: str) -> None:
         """按 payload 里的 entry_id 过滤删除，而非按 point_id 直接删。

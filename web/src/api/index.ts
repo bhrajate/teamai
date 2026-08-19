@@ -49,8 +49,27 @@ export const memoryApi = {
     return request<Memory[]>(`/channels/${channelId}/memories${qs}`, { signal })
   },
 
-  create: (channelId: string, body: { content: string; type?: MemoryType; user_id?: string }) =>
-    request<Memory>(`/channels/${channelId}/memories`, { method: 'POST', body }),
+  /**
+   * 手工写入。写前后端会查冲突 —— 库里有疑似说同一件事的现行记忆时抛
+   * **409**，`ApiError.body` 里带候选列表（用 `readMemoryConflictDetail` 读）。
+   *
+   * 撞上 409 后要么给 `supersede_id`（取代那条），要么给 `force`（明确要并列
+   * 存在）。两者不能同时给，后端报 400 —— 它们表达的是相反的意图。
+   *
+   * 没有单独的「预检」端点：409 已经把候选带回来了，再打一次是多余往返。
+   */
+  create: (
+    channelId: string,
+    body: {
+      content: string
+      type?: MemoryType
+      user_id?: string
+      /** 取代这条既有记忆（新写一条 + 给旧条目打 superseded_by）。 */
+      supersede_id?: string
+      /** 跳过冲突检查，与已有记忆并列写入。 */
+      force?: boolean
+    },
+  ) => request<Memory>(`/channels/${channelId}/memories`, { method: 'POST', body }),
 
   /**
    * 改内容与/或类型。原地改，保留 id 与 created_at。

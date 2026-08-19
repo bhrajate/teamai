@@ -1,15 +1,19 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
+  Alert,
   App,
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Table,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
@@ -18,7 +22,8 @@ import { useCallback, useState } from 'react'
 
 import { memoryApi } from '@/api'
 import { ApiError } from '@/api/client'
-import type { Memory, MemoryType } from '@/api/types'
+import type { Memory, MemoryConflictDetail, MemoryType } from '@/api/types'
+import { readMemoryConflictDetail } from '@/api/types'
 import { EntityId } from '@/components/EntityId'
 import { PageHeader } from '@/components/PageHeader'
 import { AsyncBoundary, EmptyBlock } from '@/components/states'
@@ -33,9 +38,94 @@ import {
 const MEMORY_TYPE_SELECT = MEMORY_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.text }))
 import { useAsync } from '@/hooks/useAsync'
 import { useChannelId } from '@/hooks/useChannelId'
-import { formatFromNow, formatTime } from '@/lib/format'
+import { formatDate, formatFromNow, formatTime } from '@/lib/format'
 
 type FormValues = { content: string; type?: MemoryType; user_id?: string }
+
+/** 「都不取代，并列写入」的 radio 取值。用不可能与 ULID 相撞的字面量。 */
+const WRITE_PARALLEL = '__parallel__'
+
+/**
+ * 撞上冲突后的选择界面。
+ *
+ * 为什么要人来选而不是自动取代：凭一句待写入的话判不出「这是新版本」还是
+ * 「另一件事」，而错误取代会作废一条正确的记忆。理由同蒸馏侧不给 DELETE。
+ *
+ * **默认不预选任何一项。** 预选「取代最像的那条」等于替人做了那个判断，而这道
+ * 界面存在的全部理由就是不替人做判断；预选「并列写入」则等于默认放行，那还不如
+ * 不拦。故确认按钮在选出之前是禁用的。
+ */
+export function ConflictResolution({
+  detail,
+  content,
+  value,
+  onChange,
+}: {
+  detail: MemoryConflictDetail
+  content: string
+  value: string | null
+  onChange: (v: string) => void
+}) {
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Alert
+        type="warning"
+        showIcon
+        title={detail.message}
+        description={
+          detail.degraded
+            ? '配上 embedding 后这里能查出说法不同但意思相同的记忆。'
+            : undefined
+        }
+      />
+
+      <div>
+        <Typography.Text type="secondary">你要写入的：</Typography.Text>
+        <Typography.Paragraph className="wrap-anywhere" style={{ margin: '4px 0 0' }} strong>
+          {content}
+        </Typography.Paragraph>
+      </div>
+
+      <Radio.Group
+        value={value ?? undefined}
+        onChange={(e) => onChange(e.target.value as string)}
+        style={{ width: '100%' }}
+      >
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          {detail.conflicts.map((c) => (
+            <Radio key={c.entry.id} value={c.entry.id} style={{ alignItems: 'flex-start' }}>
+              <Space direction="vertical" size={2}>
+                <Space size={6} wrap>
+                  <Typography.Text type="secondary">取代这条</Typography.Text>
+                  {/* 日期要显眼：它是判断哪条是现行说法的依据，也是 Agent 侧
+                      裁决矛盾记忆用的同一个信号。 */}
+                  <Tag>{formatDate(c.entry.created_at)}</Tag>
+                  <MemoryTypeTag value={c.entry.type} />
+                  {c.score === null ? (
+                    <Tooltip title="未配 embedding，这条是按字面重复查出来的">
+                      <Tag color="default">字面重复</Tag>
+                    </Tooltip>
+                  ) : (
+                    <Tag color="orange">相似度 {Math.round(c.score * 100)}%</Tag>
+                  )}
+                </Space>
+                <Typography.Text className="wrap-anywhere">{c.entry.content}</Typography.Text>
+              </Space>
+            </Radio>
+          ))}
+          <Radio value={WRITE_PARALLEL} style={{ alignItems: 'flex-start' }}>
+            <Space direction="vertical" size={2}>
+              <Typography.Text>都不取代，并列写入</Typography.Text>
+              <Typography.Text type="secondary">
+                两条会同时是现行记忆。说的确实是两件事时选这个。
+              </Typography.Text>
+            </Space>
+          </Radio>
+        </Space>
+      </Radio.Group>
+    </Space>
+  )
+}
 
 /**
  * 频道记忆。可增、可改、可删 —— 记忆会被后续任务检索复用，故错的记忆要能改或删，
@@ -55,15 +145,36 @@ export function MemoryPage() {
   const [editing, setEditing] = useState<Memory | null>(null)
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // 非 null 表示 Modal 处在「解决冲突」那一步。同时留着刚填的表单值：确认后要按
+  // 它重发，而 Modal 用了 destroyOnHidden、表单实例这时已经不能指望。
+  const [conflict, setConflict] = useState<{ detail: MemoryConflictDetail; values: FormValues } | null>(
+    null,
+  )
+  const [resolution, setResolution] = useState<string | null>(null)
+  // 取代之后那条会从默认列表消失（默认只给现行事实）。这个开关是这次一起加的：
+  // 控制台第一次能发起取代，而在此之前它没有任何地方能看到被取代的条目 ——
+  // 那等于加了一个结果不可见的操作。
+  const [includeSuperseded, setIncludeSuperseded] = useState(false)
   const [form] = Form.useForm<FormValues>()
 
   const state = useAsync(
-    useCallback((signal: AbortSignal) => memoryApi.list(channelId, signal), [channelId]),
-    [channelId],
+    useCallback(
+      (signal: AbortSignal) => memoryApi.list(channelId, signal, includeSuperseded),
+      [channelId, includeSuperseded],
+    ),
+    [channelId, includeSuperseded],
   )
+
+  const closeModal = () => {
+    setOpen(false)
+    setConflict(null)
+    setResolution(null)
+  }
 
   const openCreate = () => {
     setEditing(null)
+    setConflict(null)
+    setResolution(null)
     setOpen(true)
   }
 
@@ -90,11 +201,47 @@ export function MemoryPage() {
         await memoryApi.create(channelId, values)
         message.success('已写入')
       }
-      setOpen(false)
+      closeModal()
       form.resetFields()
       state.reload()
     } catch (err) {
+      // 409：库里有疑似说同一件事的现行记忆。不是失败，是要人做个决定 ——
+      // 切到选择那一步，别弹错误提示（那会让人以为写不进去）。
+      const detail = err instanceof ApiError && err.status === 409
+        ? readMemoryConflictDetail(err.body)
+        : null
+      if (detail) {
+        setConflict({ detail, values })
+        setResolution(null)
+        return
+      }
       message.error(err instanceof ApiError ? err.detail : editing ? '更新失败' : '写入失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  /** 按人选的方式重发写入。 */
+  const submitResolved = async () => {
+    if (!conflict || !resolution) return
+    setSubmitting(true)
+    try {
+      const parallel = resolution === WRITE_PARALLEL
+      await memoryApi.create(channelId, {
+        ...conflict.values,
+        // 两者互斥，后端同时收到会报 400
+        ...(parallel ? { force: true } : { supersede_id: resolution }),
+      })
+      message.success(
+        parallel
+          ? '已并列写入'
+          : '已取代旧记忆。旧的那条仍在库里，勾「含已取代」可以看到',
+      )
+      closeModal()
+      form.resetFields()
+      state.reload()
+    } catch (err) {
+      message.error(err instanceof ApiError ? err.detail : '写入失败')
     } finally {
       setSubmitting(false)
     }
@@ -114,14 +261,30 @@ export function MemoryPage() {
     {
       title: '内容',
       dataIndex: 'content',
-      render: (v: string) => (
-        <Typography.Paragraph
-          className="wrap-anywhere"
-          style={{ margin: 0 }}
-          ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
-        >
-          {v}
-        </Typography.Paragraph>
+      render: (v: string, r: Memory) => (
+        <Space direction="vertical" size={2}>
+          {/* 被取代的条目必须一眼可辨：它们不参与检索，混在现行记忆里看会让人
+              以为同一件事重复存了好几条。只在开了「含已取代」时才会出现。 */}
+          {r.superseded_by && (
+            <Tooltip
+              title={
+                r.superseded_at
+                  ? `已于 ${formatTime(r.superseded_at)} 被取代，不再参与检索`
+                  : '已被取代，不再参与检索'
+              }
+            >
+              <Tag color="default">已取代</Tag>
+            </Tooltip>
+          )}
+          <Typography.Paragraph
+            className="wrap-anywhere"
+            style={{ margin: 0 }}
+            type={r.superseded_by ? 'secondary' : undefined}
+            ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
+          >
+            {v}
+          </Typography.Paragraph>
+        </Space>
       ),
     },
     {
@@ -227,6 +390,17 @@ export function MemoryPage() {
         description="Agent 从对话中积累的知识，后续任务会检索复用。频道间默认隔离，除非开了跨频道学习。"
         extra={
           <Space>
+            {/* 默认列表只给现行事实。开这个才看得到被取代的版本 ——
+                「这条事实之前是什么」是排查「机器人为什么这么说」的主要线索，
+                而取代既可能来自蒸馏也可能来自这个页面上的手工取代。 */}
+            <Tooltip title="连已被取代的历史版本一起显示。它们不参与检索，只供排查。">
+              <Checkbox
+                checked={includeSuperseded}
+                onChange={(e) => setIncludeSuperseded(e.target.checked)}
+              >
+                含已取代
+              </Checkbox>
+            </Tooltip>
             <Button icon={<ReloadOutlined />} onClick={state.reload} loading={state.loading}>
               刷新
             </Button>
@@ -265,16 +439,45 @@ export function MemoryPage() {
       </AsyncBoundary>
 
       <Modal
-        title={editing ? '修改记忆' : '手工写入记忆'}
+        title={conflict ? '这条可能和已有记忆重复' : editing ? '修改记忆' : '手工写入记忆'}
         open={open}
-        onCancel={() => setOpen(false)}
-        onOk={() => void submit()}
+        // 冲突那一步的取消是「返回修改」，回到表单而不是关掉整个 Modal ——
+        // 关掉会把刚写的内容一起丢掉，而人点它的意思通常是想改措辞再试。
+        onCancel={() => {
+          if (conflict) {
+            setConflict(null)
+            setResolution(null)
+          } else {
+            closeModal()
+          }
+        }}
+        onOk={() => void (conflict ? submitResolved() : submit())}
         confirmLoading={submitting}
-        okText={editing ? '保存' : '写入'}
-        cancelText="取消"
+        okText={conflict ? '确认' : editing ? '保存' : '写入'}
+        // 没选之前不许确认：这道界面的全部理由是让人做那个判断，
+        // 给一个可点的默认等于替他做了
+        okButtonProps={conflict ? { disabled: !resolution } : undefined}
+        cancelText={conflict ? '返回修改' : '取消'}
+        // destroyOnHidden 只在 Modal **关闭**时销毁子节点。切到冲突那一步时 Modal
+        // 仍是开着的，所以表单实例与已填内容都还活着，「返回修改」原样回来。
         destroyOnHidden
+        width={conflict ? 640 : undefined}
       >
-        <Form form={form} layout="vertical" requiredMark={false}>
+        {conflict && (
+          <ConflictResolution
+            detail={conflict.detail}
+            content={conflict.values.content}
+            value={resolution}
+            onChange={setResolution}
+          />
+        )}
+        <Form
+          form={form}
+          layout="vertical"
+          requiredMark={false}
+          // 冲突那一步藏起表单而不是卸载：内容要留着，「返回修改」时原样回来
+          style={conflict ? { display: 'none' } : undefined}
+        >
           <Form.Item
             name="content"
             label="内容"

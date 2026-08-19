@@ -225,6 +225,8 @@ def build_container() -> Container:
         uow,
         vector_store=vector_store,
         embedder=embedder,
+        conflict_threshold=settings.memory_conflict_threshold,
+        conflict_scan_limit=settings.memory_conflict_scan_limit,
     )
     interactions = InteractionService(
         interaction_repo, retention_days=settings.interactions_retention_days

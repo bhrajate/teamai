@@ -141,6 +141,20 @@ class Settings(BaseSettings):
     memory_window_size: int = 20
     # 窗口静置超过这么久也蒸馏，避免冷清频道的对话一直攒着不落地
     memory_window_idle_seconds: int = 600
+    # 手工写入时判「疑似与已有记忆冲突」的余弦相似度阈值（见
+    # MemoryService.find_conflicts）。命中就让 Admin API 返回 409，由录入人决定
+    # 取代哪条还是并列写入。
+    #
+    # 这个数没有先验的正确值，0.85 是保守初值：宁可少拦（漏掉的冲突还有读取侧的
+    # 日期裁决兜着），不要动辄拦下不相干的写入 —— 后者会让人学会无脑点「并列
+    # 写入」，那时这道检查就白设了。等真实数据出来再调。
+    #
+    # ⚠️ 含义取决于 Qdrant 建集合时的距离度量（当前 Cosine，取值 [0,1] 越大越
+    # 像）。换成 Euclid 之后「大于阈值算冲突」的方向是反的。
+    memory_conflict_threshold: float = 0.85
+    # 向量不可用时，文本兜底扫描多少条现行记忆。这条路只能查出字面重复，查不出
+    # 语义矛盾，取一个够用的小值即可 —— 它是降级路径，不该为它做全表扫描。
+    memory_conflict_scan_limit: int = 50
 
     # projector.*（记忆向量投影：消费 memory_outbox，见 docs/plan-memory-outbox.md）
     # 空转时的轮询间隔。取 2 秒而非分钟级：「刚写入的记忆搜不到」在同一个会话里

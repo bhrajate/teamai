@@ -29,6 +29,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass, field
 
 from teamai.domain.identity import gen_id
 from teamai.domain.models import (
@@ -49,6 +51,47 @@ logger = logging.getLogger(__name__)
 # 多了既烧 token 又冲淡真正相关的那几条。
 FALLBACK_LIMIT = 20
 
+# 冲突检查向向量库要多少条候选。比检索的 top_k=5 小：这些要摊给人一条条看，
+# 给多了没人看得完，而阈值本来就该把不相干的滤掉。
+CONFLICT_TOP_K = 5
+
+# 文本兜底比对时忽略的字符：空白与常见中英标点。
+# ⚠️ 刻意不含数字与单位 —— 「超时 3 秒」与「超时 5 秒」的差别全在那个数字上，
+# 归一化掉它们会把真正的矛盾判成字面相同，那正是这道检查要抓的东西。
+_NOISE = re.compile(r"[\s，。、；：！？「」『』（）,.;:!?\"'()\[\]{}—\-_/\\|]+")
+
+
+def _normalize(text: str) -> str:
+    """归一化文本用于字面比对。见 `_NOISE` 的说明。"""
+    return _NOISE.sub("", text).lower()
+
+
+@dataclass
+class MemoryConflict:
+    """一条疑似与待写入内容冲突的现行记忆。"""
+
+    entry: MemoryEntry
+    # 余弦相似度。文本兜底路径下为 None —— 那时判据是字面重复，报一个假的
+    # 相似度会让人以为向量检查生效了，而它恰恰没生效。
+    score: float | None
+
+
+@dataclass
+class ConflictCheck:
+    """冲突检查的结果。
+
+    `degraded` 必须与冲突列表一起返回，不能只看 `conflicts` 是否为空：
+    「没查到冲突」与「查不了冲突」在调用方看来长得一样，而后者要告诉录入人
+    ——「未配 embedding，只能查出字面重复」。把这个区分留给调用方自己判
+    `_vector_ready`，就等于让它重新实现一遍本方法的判断。
+    """
+
+    conflicts: list[MemoryConflict] = field(default_factory=list)
+    degraded: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.conflicts)
+
 
 class MemoryService:
     def __init__(
@@ -60,6 +103,9 @@ class MemoryService:
         uow: UnitOfWork,
         vector_store=None,
         embedder: Embedder | None = None,
+        *,
+        conflict_threshold: float = 0.85,
+        conflict_scan_limit: int = 50,
     ) -> None:
         self._repo = repo
         self._channel_repo = channel_repo
@@ -68,6 +114,11 @@ class MemoryService:
         self._uow = uow
         self._vector = vector_store
         self._embedder = embedder
+        # 默认值与 config.py 的同名配置项一致，真值由容器注入。给默认是为了让
+        # 测试与窄装配不必每次都传 —— 但两处的数字必须一样，不然「改了配置没生效」
+        # 会取决于是谁构造的。
+        self._conflict_threshold = conflict_threshold
+        self._conflict_scan_limit = conflict_scan_limit
 
     @property
     def _vector_ready(self) -> bool:
@@ -288,6 +339,88 @@ class MemoryService:
         hits.extend(p for p in prefs if p.id not in seen)
         return hits
 
+    async def find_conflicts(
+        self,
+        channel_instance_id: str,
+        content: str,
+        *,
+        type: MemoryType = MemoryType.BACKGROUND_KNOWLEDGE,
+    ) -> ConflictCheck:
+        """查该频道有没有现行记忆与将要写入的 `content` 疑似冲突。
+
+        用于**手工写入**（Admin API）。蒸馏路径不用这个：那边由模型对整窗产出
+        逐条给 ADD / UPDATE / NOOP，判断依据比这里丰富得多。这里只有孤零零一句
+        待写入的话，凭它替人决定「这是新版本还是另一件事」是不够的 —— 所以本方法
+        只返回材料，取代还是并列由录入人定（见 adapters/admin/memory.py 的 409）。
+
+        与 `find_similar` 的区别，别把两者合并：那个为蒸馏服务，会把偏好无条件
+        追加进候选、向量不可用时回落到「最近若干条」当候选 —— 两种行为在这里都是
+        错的。追加的偏好没有分数，阈值对它们无从施加；而把「最近 10 条」原样当成
+        冲突，等于对每次写入都报一堆不相干的条目。
+
+        **偏好不参与**（`type is PREFERENCE` 时直接返回空）：偏好按 `should_embed`
+        不建向量，语义检查对它结构性无效 —— 走向量路径会查出零条，那会被读成
+        「没有冲突」，而真相是「没能力查」。要覆盖偏好得换机制（字面匹配或一次小
+        模型调用），记在 docs/tasklist.md 22.4。
+
+        向量不可用时（默认装配就是 `NullEmbedder`）退化为字面比对，并置
+        `degraded=True`。这条路只能查出字面重复、查不出语义矛盾，但比放行强 ——
+        「静默什么都不做」正是这个项目反复踩的那类缺陷。
+        """
+        if type is MemoryType.PREFERENCE:
+            return ConflictCheck()
+
+        if self._vector_ready:
+            return await self._semantic_conflicts(channel_instance_id, content)
+        return await self._text_conflicts(channel_instance_id, content)
+
+    async def _semantic_conflicts(self, channel_instance_id: str, content: str) -> ConflictCheck:
+        try:
+            embedding = await self._embedder.embed(content)  # type: ignore[union-attr]
+            if not embedding:
+                # embed 返回空（凭据失效、服务降级）与「没配 embedder」是同一种
+                # 处境，走同一条兜底 —— 否则这里会静默放行。
+                return await self._text_conflicts(channel_instance_id, content)
+            scored = await self._vector.query(channel_instance_id, embedding, CONFLICT_TOP_K)
+        except Exception as exc:
+            logger.warning(f"冲突检查的向量查询失败，退化为字面比对: {exc}")
+            return await self._text_conflicts(channel_instance_id, content)
+
+        out: list[MemoryConflict] = []
+        for entry_id, score in scored:
+            if score < self._conflict_threshold:
+                # Qdrant 已按分数降序，本可以 break —— 用 continue 是因为「降序」
+                # 是它的行为而非本方法的前提，换了向量库或加了重排就不成立。
+                continue
+            entry = await self._repo.get(entry_id)
+            # 已被取代的不算冲突：它已经不是现行事实，拿它问人「要不要取代」
+            # 是个没有意义的问题。残留向量在投影追上前会命中，同 _semantic_hits。
+            if entry is None or not entry.is_current or not should_embed(entry.type):
+                continue
+            out.append(MemoryConflict(entry=entry, score=score))
+        return ConflictCheck(conflicts=out)
+
+    async def _text_conflicts(self, channel_instance_id: str, content: str) -> ConflictCheck:
+        """字面比对兜底：归一化后互为子串即算疑似冲突。
+
+        双向包含都算：录入人可能在补充一条已有记忆（新内容更长），也可能在写一条
+        更精简的表述（新内容更短）。只判一个方向会漏掉另一半。
+        """
+        target = _normalize(content)
+        if not target:
+            return ConflictCheck(degraded=True)
+        recent = await self._repo.list_by_channel(
+            channel_instance_id,
+            limit=self._conflict_scan_limit,
+            exclude_type=MemoryType.PREFERENCE,
+        )
+        out = [
+            MemoryConflict(entry=e, score=None)
+            for e in recent
+            if (norm := _normalize(e.content)) and (norm in target or target in norm)
+        ]
+        return ConflictCheck(conflicts=out, degraded=True)
+
     async def query_for_context(
         self, channel_instance_id: str, query: str, top_k: int = 5
     ) -> list[MemoryEntry]:
@@ -349,7 +482,10 @@ class MemoryService:
             embedding = await self._embedder.embed(query)  # type: ignore[union-attr]
             if not embedding:
                 return []
-            ids = await self._vector.query(channel_instance_id, embedding, top_k)
+            # 分数在这条路上没用，显式丢掉。它是给 find_conflicts 的 —— 那里要按
+            # 阈值判「像到该拦下手工写入」，而检索只关心排序，Qdrant 已按分数降序。
+            scored = await self._vector.query(channel_instance_id, embedding, top_k)
+            ids = [eid for eid, _score in scored]
         except Exception as exc:  # pragma: no cover - 向量服务异常时降级
             logger.warning(f"向量检索失败，回落到时间倒序: {exc}")
             return []

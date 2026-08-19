@@ -60,7 +60,9 @@ class StubVectorStore:
         self.upserted.append((entry.id, entry.content))
         return f"point-{entry.id}"
 
-    async def query(self, channel_instance_id: str, embedding, top_k: int) -> list[str]:
+    async def query(
+        self, channel_instance_id: str, embedding, top_k: int
+    ) -> list[tuple[str, float]]:
         return []
 
     async def delete(self, entry_id: str) -> None:

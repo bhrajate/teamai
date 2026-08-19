@@ -96,6 +96,52 @@ export type Memory = {
   created_at: string
 }
 
+/**
+ * 一条疑似与待写入内容冲突的现行记忆。
+ *
+ * 形状由 `adapters/admin/memory.py` 的 `_conflict_detail` 决定，
+ * 由 `tests/unit/test_admin_memory_conflict.py::test_409的body形状` 锁住。
+ */
+export type MemoryConflict = {
+  entry: Memory
+  /**
+   * 余弦相似度 [0,1]。**null 表示走的是字面比对兜底**（未配 embedding），
+   * 那时没有相似度可言 —— 后端刻意给 null 而不是编一个数，页面据此显示
+   * 「字面重复」而不是一个假的百分比。
+   */
+  score: number | null
+}
+
+/** 手工写入撞上冲突时 409 的 detail。 */
+export type MemoryConflictDetail = {
+  message: string
+  /**
+   * 冲突检查是否处于降级状态（未配 embedding，只能查字面重复）。
+   * 必须显示给录入人：不说的话「只报了这几条」会被读成「确认只有这几条」。
+   */
+  degraded: boolean
+  conflicts: MemoryConflict[]
+}
+
+/**
+ * 从 `ApiError.body` 里认出记忆冲突的 detail。
+ *
+ * 放在 types 而不是 client：`ApiError` 是全站通用的失败载体，不该认识
+ * 「记忆冲突」这个领域概念（见 api/client.ts 里 `body` 字段的说明）。
+ */
+export function readMemoryConflictDetail(body: unknown): MemoryConflictDetail | null {
+  if (!body || typeof body !== 'object' || !('detail' in body)) return null
+  const d = (body as { detail: unknown }).detail
+  if (!d || typeof d !== 'object' || !('conflicts' in d)) return null
+  const { conflicts, message, degraded } = d as Record<string, unknown>
+  if (!Array.isArray(conflicts)) return null
+  return {
+    message: typeof message === 'string' ? message : '',
+    degraded: degraded === true,
+    conflicts: conflicts as MemoryConflict[],
+  }
+}
+
 export type Budget = {
   id: string
   scope: BudgetScope

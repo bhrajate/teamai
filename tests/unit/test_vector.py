@@ -28,6 +28,7 @@ Qdrant 部分不连真服务，而是用假 client 断言**传给 SDK 的参数�
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,15 +46,28 @@ def _entry(eid: str = "mem_1", channel: str = "ch_1", content: str = "某事实"
 class FakeQdrantClient:
     """记下每次调用的参数，不做任何真实存储。"""
 
-    def __init__(self) -> None:
+    def __init__(self, points: list | None = None) -> None:
         self.uploaded: list[dict] = []
         self.deleted: list[dict] = []
+        self.queried: list[dict] = []
+        self._points = points or []
 
     def upload_points(self, collection_name: str, points: list) -> None:
         self.uploaded.append({"collection": collection_name, "points": points})
 
     def delete(self, collection_name: str, points_selector) -> None:
         self.deleted.append({"collection": collection_name, "selector": points_selector})
+
+    def query_points(self, collection_name: str, query, query_filter, limit: int):
+        self.queried.append(
+            {
+                "collection": collection_name,
+                "query": query,
+                "filter": query_filter,
+                "limit": limit,
+            }
+        )
+        return SimpleNamespace(points=self._points)
 
 
 @pytest.fixture
@@ -87,6 +101,40 @@ async def test_upsert传的是PointStruct而非dict(qdrant) -> None:
     assert point.vector == [1.0, 2.0, 3.0]
     assert point.payload == {"entry_id": "mem_1", "channel_instance_id": "ch_1"}
     assert ref == point.id, "返回值须是 point id，供回填 embedding_ref"
+
+
+async def test_query返回带相似度的元组() -> None:
+    """`query` 的返回是 `(entry_id, 相似度)`，不是裸 id。
+
+    分数是手工写入冲突检查的判据（`MemoryService.find_conflicts` 按阈值判「像到
+    该拦下来」）。这条用例锁的是形态：漏了分数不会在这一层报错，会在上层表现为
+    「阈值怎么调都不起作用」—— 因为解包出来的第二个值根本不是分数。
+    """
+    store = QdrantVectorStore(collection="test-col", dimensions=3)
+    store._client = FakeQdrantClient(
+        points=[
+            SimpleNamespace(payload={"entry_id": "mem_1"}, score=0.93),
+            SimpleNamespace(payload={"entry_id": "mem_2"}, score=0.71),
+        ]
+    )
+
+    hits = await store.query("ch_1", [1.0, 0.0, 0.0], 5)
+
+    assert hits == [("mem_1", 0.93), ("mem_2", 0.71)]
+
+
+async def test_query按频道过滤且带上限() -> None:
+    """频道隔离在这一层就要成立 —— 它是 Design-claude-tag.md §5 的正确性属性。"""
+    store = QdrantVectorStore(collection="test-col", dimensions=3)
+    client = FakeQdrantClient(points=[])
+    store._client = client
+
+    await store.query("ch_1", [1.0, 0.0, 0.0], 7)
+
+    call = client.queried[0]
+    assert call["limit"] == 7
+    assert call["filter"]["must"][0]["key"] == "channel_instance_id"
+    assert call["filter"]["must"][0]["match"]["value"] == "ch_1"
 
 
 async def test_delete传的是Filter模型而非dict(qdrant) -> None:

@@ -62,14 +62,30 @@ class StubEmbedder(Embedder):
         return list(self._vector)
 
 
+# 只给 id 时替身补的相似度。见 StubVectorStore 的说明。
+_STUB_SCORE = 1.0
+
+
 class StubVectorStore:
-    def __init__(self, hits: list[str] | None = None, *, fail: bool = False) -> None:
+    """`hits` 可以给裸 id，也可以给 `(id, 相似度)`。
+
+    检索用例只关心「哪几条被捞回来」，为它们逐个写分数是噪声；而冲突检查
+    （`find_conflicts`）的判据就是分数，那些用例必须显式给。故两种形态都收，
+    只给 id 时按 `_STUB_SCORE` 补 —— 取 1.0（完全相同）而不是一个恰好跨过阈值的
+    中间值：替身的默认值不该悄悄决定「算不算冲突」，要测阈值就得自己写出分数。
+    """
+
+    def __init__(
+        self, hits: list[str] | list[tuple[str, float]] | None = None, *, fail: bool = False
+    ) -> None:
         self.upserted: list[str] = []
         self.deleted: list[str] = []
         self.queries: list[tuple[str, int]] = []
         # 记下每次 upsert 的内容，用于断言编辑后向量真的按新内容重算过
         self.upserted_content: list[str] = []
-        self._hits = hits or []
+        self._hits: list[tuple[str, float]] = [
+            h if isinstance(h, tuple) else (h, _STUB_SCORE) for h in (hits or [])
+        ]
         self._fail = fail
 
     async def upsert(self, entry: MemoryEntry, embedding: list[float]) -> str | None:
@@ -86,7 +102,7 @@ class StubVectorStore:
 
     async def query(
         self, channel_instance_id: str, embedding: list[float], top_k: int
-    ) -> list[str]:
+    ) -> list[tuple[str, float]]:
         if self._fail:
             raise ConnectionError("Qdrant 挂了")
         self.queries.append((channel_instance_id, top_k))
@@ -99,6 +115,7 @@ def _service(
     vector=None,
     embedder: Embedder | None = None,
     outbox: FakeOutboxRepository | None = None,
+    conflict_threshold: float | None = None,
 ) -> tuple[MemoryService, FakeMemoryRepository, FakeAuditRepository]:
     """装一个 MemoryService。
 
@@ -108,6 +125,9 @@ def _service(
     的说明。
 
     outbox 默认新建一个，需要断言入队内容的用例显式传入自己那份。
+
+    `conflict_threshold` 不传就用服务的默认值（与 config.py 同名配置项一致）——
+    冲突检查的多数用例该跑在真实默认值下，只有专门验「阈值起作用」的才自己给。
     """
     memory_repo = repo or FakeMemoryRepository()
     audit_repo = FakeAuditRepository()
@@ -119,6 +139,7 @@ def _service(
         NullUnitOfWork(),
         vector_store=vector,
         embedder=embedder,
+        **({} if conflict_threshold is None else {"conflict_threshold": conflict_threshold}),
     )
     return service, memory_repo, audit_repo
 
@@ -425,6 +446,189 @@ async def test_频道隔离() -> None:
     hits = await service.query_for_context("ch_B", "问个问题", top_k=10)
 
     assert all(h.channel_instance_id == "ch_B" for h in hits)
+
+
+# ===== 手工写入的冲突检查 =====
+#
+# 锁的缺陷：Admin API 的 store() 此前不做任何近似检索，人在控制台写「超时 5 秒」
+# 时库里有蒸馏出的「超时 3 秒」，两条直接并列成为现行，而没有任何一处会发现。
+# 蒸馏侧的去重只覆盖它自己那条路。
+
+
+def test_服务默认阈值与配置项一致() -> None:
+    """`MemoryService` 的 `conflict_threshold` 默认值给了一份，`config.py` 给了
+    另一份。两处必须相同 —— 不然「改了配置没生效」会取决于是谁构造的服务，
+    而窄装配（测试、脚本）与容器装配用的是不同那份。
+    """
+    import inspect
+
+    from teamai.config import Settings
+
+    sig = inspect.signature(MemoryService.__init__)
+    defaults = Settings()
+    assert sig.parameters["conflict_threshold"].default == defaults.memory_conflict_threshold
+    assert sig.parameters["conflict_scan_limit"].default == defaults.memory_conflict_scan_limit
+
+
+async def test_相似度过阈值算冲突() -> None:
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(id="mem_old", channel_instance_id="ch_1", content="网关超时设为 3 秒")
+    )
+    service, _, _ = _service(
+        repo, vector=StubVectorStore([("mem_old", 0.93)]), embedder=StubEmbedder()
+    )
+
+    check = await service.find_conflicts("ch_1", "网关超时设为 5 秒")
+
+    assert [c.entry.id for c in check.conflicts] == ["mem_old"]
+    assert check.conflicts[0].score == 0.93
+    assert not check.degraded, "向量可用时不该标降级"
+    assert check, "ConflictCheck 应能直接当真值判"
+
+
+async def test_相似度不到阈值不算冲突() -> None:
+    """阈值以下的放行。宁可少拦 —— 动辄拦下不相干的写入，人会学会无脑点
+    「并列写入」，那时这道检查就白设了。"""
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="重试 3 次"))
+    service, _, _ = _service(
+        repo, vector=StubVectorStore([("mem_1", 0.60)]), embedder=StubEmbedder()
+    )
+
+    check = await service.find_conflicts("ch_1", "网关超时设为 5 秒")
+
+    assert check.conflicts == []
+    assert not check
+
+
+async def test_阈值可配() -> None:
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="超时 3 秒"))
+    vector = StubVectorStore([("mem_1", 0.70)])
+    lax, _, _ = _service(repo, vector=vector, embedder=StubEmbedder(), conflict_threshold=0.5)
+    strict, _, _ = _service(repo, vector=vector, embedder=StubEmbedder(), conflict_threshold=0.95)
+
+    assert await lax.find_conflicts("ch_1", "超时 5 秒")
+    assert not await strict.find_conflicts("ch_1", "超时 5 秒")
+
+
+async def test_已被取代的不算冲突() -> None:
+    """它已经不是现行事实，拿它问人「要不要取代」是个没意义的问题。
+
+    残留向量在投影追上前仍会命中（supersede 入队删向量是异步的），故这里要滤。
+    """
+    repo = FakeMemoryRepository()
+    old = MemoryEntry(id="mem_old", channel_instance_id="ch_1", content="超时 3 秒")
+    old.supersede("mem_new")
+    await repo.store(old)
+    service, _, _ = _service(
+        repo, vector=StubVectorStore([("mem_old", 0.99)]), embedder=StubEmbedder()
+    )
+
+    assert (await service.find_conflicts("ch_1", "超时 5 秒")).conflicts == []
+
+
+async def test_偏好跳过检查() -> None:
+    """偏好按 should_embed 不建向量，语义检查对它结构性无效 —— 走向量路径会查出
+    零条，而那会被读成「没有冲突」，真相是「没能力查」。故显式跳过并记在
+    tasklist 22.4，而不是让它看起来查过了。"""
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(
+            id="mem_p",
+            channel_instance_id="ch_1",
+            content="回答要简短",
+            type=MemoryType.PREFERENCE,
+        )
+    )
+    vector = StubVectorStore([("mem_p", 0.99)])
+    service, _, _ = _service(repo, vector=vector, embedder=StubEmbedder())
+
+    check = await service.find_conflicts("ch_1", "回答要简短", type=MemoryType.PREFERENCE)
+
+    assert check.conflicts == []
+    assert not check.degraded, "跳过不是降级 —— 降级指「本该查却查不了」"
+    assert vector.queries == [], "连查都不该查"
+
+
+async def test_无向量时退化为字面比对且标降级() -> None:
+    """默认装配就是 NullEmbedder。这条路只能查出字面重复，但比静默放行强 ——
+    「查不了」与「没查到」必须能区分，否则「没报冲突」会被读成「确认没冲突」。"""
+    repo = FakeMemoryRepository()
+    await repo.store(
+        MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="部署走 GitHub Actions")
+    )
+    service, _, _ = _service(repo)
+
+    check = await service.find_conflicts("ch_1", "部署走 GitHub Actions。")
+
+    assert [c.entry.id for c in check.conflicts] == ["mem_1"], "标点差异不影响字面比对"
+    assert check.conflicts[0].score is None, "字面路径没有相似度，不能编一个"
+    assert check.degraded
+
+
+async def test_字面比对双向包含都算() -> None:
+    """录入人可能在补充一条已有记忆（新内容更长），也可能在写更精简的表述
+    （更短）。只判一个方向会漏掉另一半。"""
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_long", channel_instance_id="ch_1", content="部署走 CI"))
+    service, _, _ = _service(repo)
+
+    longer = await service.find_conflicts("ch_1", "部署走 CI，不要手工 scp")
+    assert [c.entry.id for c in longer.conflicts] == ["mem_long"]
+
+    repo2 = FakeMemoryRepository()
+    await repo2.store(
+        MemoryEntry(id="mem_2", channel_instance_id="ch_1", content="部署走 CI，不要手工 scp")
+    )
+    service2, _, _ = _service(repo2)
+    shorter = await service2.find_conflicts("ch_1", "部署走 CI")
+    assert [c.entry.id for c in shorter.conflicts] == ["mem_2"]
+
+
+async def test_字面比对不归一化数字() -> None:
+    """回归点：「超时 3 秒」与「超时 5 秒」的差别全在那个数字上。把数字也归一化掉
+    会把真正的矛盾判成字面相同 —— 而那是这道检查最该抓的东西，不是最该忽略的。"""
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="超时设为 3 秒"))
+    service, _, _ = _service(repo)
+
+    check = await service.find_conflicts("ch_1", "超时设为 5 秒")
+
+    assert check.conflicts == [], "数字不同就不是字面重复（语义矛盾要靠向量路径）"
+
+
+async def test_embed返回空时走字面兜底() -> None:
+    """凭据失效导致 embed 返回空，与「没配 embedder」是同一种处境。
+    不兜底的话这里会静默放行 —— 而那正是本项目反复踩的那类缺陷。"""
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="部署走 CI"))
+    service, _, _ = _service(repo, vector=StubVectorStore(), embedder=StubEmbedder(vector=[]))
+
+    check = await service.find_conflicts("ch_1", "部署走 CI")
+
+    assert [c.entry.id for c in check.conflicts] == ["mem_1"]
+    assert check.degraded
+
+
+async def test_向量查询异常时走字面兜底() -> None:
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_1", channel_instance_id="ch_1", content="部署走 CI"))
+    service, _, _ = _service(repo, vector=StubVectorStore(fail=True), embedder=StubEmbedder())
+
+    check = await service.find_conflicts("ch_1", "部署走 CI")
+
+    assert [c.entry.id for c in check.conflicts] == ["mem_1"]
+    assert check.degraded
+
+
+async def test_冲突检查按频道隔离() -> None:
+    repo = FakeMemoryRepository()
+    await repo.store(MemoryEntry(id="mem_a", channel_instance_id="ch_A", content="部署走 CI"))
+    service, _, _ = _service(repo)
+
+    assert (await service.find_conflicts("ch_B", "部署走 CI")).conflicts == []
 
 
 # ===== 列出与删除 =====
