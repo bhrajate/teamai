@@ -329,6 +329,12 @@ class MemoryService:
                 type=MemoryType.PREFERENCE,
                 source_user_id=p.source_user_id,
                 source=p.source,
+                # ⚠️ created_at 必须显式传。它有 default_factory=_utcnow，漏了就
+                # 每条偏好都渲染成「今天」—— 而 ContextBundle.memory_context 把
+                # 日期作为矛盾记忆的裁决依据，偏好恰恰是最容易前后冲突的一类
+                # （同一个人改了主意，两条都是现行）。全都标今天等于把裁决依据
+                # 变成噪声，且这种错看起来完全正常，不会有任何报错。
+                created_at=p.created_at,
             )
             for p in prefs
         )

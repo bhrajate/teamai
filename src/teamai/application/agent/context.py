@@ -30,10 +30,27 @@ class ContextBundle:
 
     @property
     def memory_context(self) -> str:
-        """将记忆命中拼为上下文文本。"""
+        """将记忆命中拼为上下文文本，每条带写入日期。
+
+        日期不是装饰，它是矛盾记忆的唯一裁决依据。写入侧的去重与取代只在蒸馏
+        候选（语义 top-10，`CANDIDATE_TOP_K`）范围内生效，而三条路会绕过它：
+        旧记忆没排进候选窗口、向量不可用时回落成「只看最近 10 条」、人工经
+        Admin API 写入完全不过冲突检查。于是库里可能有两条并列现行而互相矛盾的
+        记忆（三月定「超时 3 秒」、六月改成 5 秒），语义相似度几乎相同、会一起
+        进 top_k。渲染成裸文本时模型没有任何依据分辨哪条是现行的 —— 这正是
+        docs/Design-conversation-context.md §3.3.1 描述的缺陷，`superseded_by`
+        只挡住了模型当场发现的那部分。裁决规则在系统提示词的行为规范里。
+
+        只给日期不给时刻：矛盾记忆的间隔通常在天到月，精确到秒纯属白耗 token。
+
+        ⚠️ 顺序不代表新旧。语义段按相似度排、回落段按时间倒序排，两者渲染出来
+        长得一样，所以不能靠位置暗示时序，日期必须显式写出来。
+        """
         if not self.memory_hits:
             return ""
-        return "\n".join(f"- {entry.content}" for entry in self.memory_hits)
+        return "\n".join(
+            f"- [{entry.created_at:%Y-%m-%d}] {entry.content}" for entry in self.memory_hits
+        )
 
     @property
     def history_context(self) -> str:

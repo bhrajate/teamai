@@ -81,6 +81,20 @@ def test_额外上下文单独成段() -> None:
     assert "上季度已迁到 k8s" in out
 
 
+def test_给出矛盾记忆的裁决规则() -> None:
+    """`ContextBundle.memory_context` 给每条记忆渲染了 `[日期]`，但光有日期不够 ——
+    模型得知道拿它做什么。没有这条规则，日期只是一串它可能忽略的字符。
+
+    两者是一件事的两半，改一处必须看另一处：写入侧的去重只覆盖蒸馏候选范围，
+    漏下来的矛盾记忆全靠这里裁决（见 docs/Design-conversation-context.md §3.3.1）。
+    """
+    out = build_system_prompt(CH, POLICY)
+
+    assert "[日期]" in out, "要说明日期是什么"
+    assert "较晚" in out, "要给出「以新为准」的裁决方向"
+    assert "不代表列出的顺序" in out, "要否掉「靠位置判断新旧」——语义段按相似度排"
+
+
 def test_标签的每个内容字段都被用到() -> None:
     """按 TagTemplate 的字段反查，防新增字段漏接。
 

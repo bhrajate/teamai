@@ -269,6 +269,35 @@ async def test_偏好不受top_k裁剪全部带上() -> None:
     assert [h.content for h in semantic] == ["事实 9", "事实 8"], "偏好不占用 top_k 名额"
 
 
+async def test_偏好保留原始created_at() -> None:
+    """回归点：`query_for_context` 为加「谁设的」前缀而重建 MemoryEntry，
+    `created_at` 有 default_factory=_utcnow —— 漏传就每条偏好都变成「今天」。
+
+    这件事的后果在 ContextBundle.memory_context：那里把写入日期作为矛盾记忆的
+    裁决依据，而偏好恰恰最容易前后冲突（同一个人改了主意，两条都是现行，且偏好
+    不建向量、被全量带上，没有相似度筛选拦着）。全标今天等于把裁决依据变成噪声，
+    且这种错看起来完全正常 —— 不报错、不缺字段，只是模型永远分不出新旧。
+    """
+    repo = FakeMemoryRepository()
+    service, _, _ = _service(repo)
+    old = datetime(2026, 3, 2, tzinfo=UTC)
+    await repo.store(
+        MemoryEntry(
+            id="mem_pref",
+            channel_instance_id="ch_1",
+            content="回答要简短",
+            type=MemoryType.PREFERENCE,
+            source_user_id="U1",
+            created_at=old,
+        )
+    )
+
+    hits = await service.query_for_context("ch_1", "问个问题", top_k=2)
+
+    pref = next(h for h in hits if h.type is MemoryType.PREFERENCE)
+    assert pref.created_at == old, "必须是原始写入时间，不是重建那一刻"
+
+
 async def test_偏好连队都不入() -> None:
     """偏好是「无条件全带」的固定上下文，不该参与 top_k 竞争。
 
