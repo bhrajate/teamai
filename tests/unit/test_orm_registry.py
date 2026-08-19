@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "audit_logs",
     "budget_quotas",
     "channel_instances",
+    "mcp_servers",
     "memory_entries",
     "memory_outbox",
     "permission_policies",

@@ -15,6 +15,7 @@ from teamai.domain.models import (
     AuditLog,
     BudgetQuota,
     ChannelInstance,
+    McpServer,
     MemoryEntry,
     MemoryType,
     OutboxEntry,
@@ -27,6 +28,7 @@ from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
     ChannelRepository,
+    McpServerRepository,
     MemoryRepository,
     OutboxRepository,
     OutboxStats,
@@ -286,6 +288,38 @@ class FakeChannelRepository(ChannelRepository):
 
     async def upsert(self, instance: ChannelInstance) -> None:
         self.items[instance.id] = instance
+
+
+class FakeMcpServerRepository(McpServerRepository):
+    """内存 MCP server 仓储。upsert 就地更新同 id 行。"""
+
+    def __init__(self, servers: list[McpServer] | None = None) -> None:
+        self._servers = {s.id: s for s in servers or []}
+
+    async def list_for_channel(self, channel_instance_id: str) -> list[McpServer]:
+        return sorted(
+            (s for s in self._servers.values() if s.channel_instance_id == channel_instance_id),
+            key=lambda s: s.name,
+        )
+
+    async def list_enabled(self) -> list[McpServer]:
+        return [s for s in self._servers.values() if s.enabled]
+
+    async def get(self, channel_instance_id: str, server_id: str) -> McpServer | None:
+        s = self._servers.get(server_id)
+        return s if s and s.channel_instance_id == channel_instance_id else None
+
+    async def find_by_name(self, channel_instance_id: str, name: str) -> McpServer | None:
+        return next(
+            (s for s in self._servers.values() if s.channel_instance_id == channel_instance_id and s.name == name),
+            None,
+        )
+
+    async def upsert(self, server: McpServer) -> None:
+        self._servers[server.id] = server
+
+    async def delete(self, channel_instance_id: str, server_id: str) -> None:
+        self._servers.pop(server_id, None)
 
 
 class FakeAuditRepository(AuditRepository):

@@ -48,6 +48,12 @@ EXPECTED_ROUTES = {
     ("DELETE", "/api/channels/{channel_instance_id}/tags/{tag_id}"),
     ("PUT", "/api/channels/{channel_instance_id}/budget"),
     ("PUT", "/api/channels/{channel_instance_id}/policy"),
+    # MCP server 管理（docs/SPEC-mcp-management.md）
+    ("GET", "/api/channels/{channel_instance_id}/mcp-servers"),
+    ("POST", "/api/channels/{channel_instance_id}/mcp-servers"),
+    ("PUT", "/api/channels/{channel_instance_id}/mcp-servers/{server_id}"),
+    ("DELETE", "/api/channels/{channel_instance_id}/mcp-servers/{server_id}"),
+    ("POST", "/api/channels/{channel_instance_id}/mcp-servers/test"),
 }
 
 

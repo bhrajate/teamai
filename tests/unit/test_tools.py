@@ -17,7 +17,7 @@ import json
 
 import httpx
 import pytest
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, ModelRetry, Tool
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -119,6 +119,43 @@ async def test_未注册的工具名被忽略(registry: ToolRegistry) -> None:
 @pytest.mark.parametrize("allowed", [[], ["全都不认识"]])
 def test_无可用工具时不挂工具集(registry: ToolRegistry, allowed: list[str]) -> None:
     assert registry.for_channel(allowed) is None
+
+
+def _mcp_tool(name: str) -> Tool:
+    async def _call(**_: object) -> str:
+        return "ok"
+
+    return Tool.from_schema(_call, name=name, description="", json_schema={"type": "object"})
+
+
+@pytest.fixture
+def mcp_registry(registry: ToolRegistry) -> ToolRegistry:
+    """在三个内置工具之上挂两个 MCP server 的工具（对齐 mcp__<server>__<tool> 命名）。"""
+    registry.register(_mcp_tool("mcp__github__search_issues"))
+    registry.register(_mcp_tool("mcp__github__create_issue"))
+    registry.register(_mcp_tool("mcp__monitor__query"))
+    return registry
+
+
+async def test_server级条目展开为该server全部工具(mcp_registry: ToolRegistry) -> None:
+    recorder, _ = await _run(mcp_registry, ["mcp__github"])
+    assert sorted(t.name for t in recorder.tools) == ["mcp__github__create_issue", "mcp__github__search_issues"]
+
+
+async def test_完整工具名精确挂载(mcp_registry: ToolRegistry) -> None:
+    recorder, _ = await _run(mcp_registry, ["mcp__github__search_issues"])
+    assert [t.name for t in recorder.tools] == ["mcp__github__search_issues"]
+
+
+async def test_server条目与内置工具混挂(mcp_registry: ToolRegistry) -> None:
+    recorder, _ = await _run(mcp_registry, ["github", "mcp__monitor"])
+    assert sorted(t.name for t in recorder.tools) == ["github", "mcp__monitor__query"]
+
+
+async def test_未连接的server名被忽略(mcp_registry: ToolRegistry) -> None:
+    """server 连接失败未注册工具时，白名单残留它的名字不应报错。"""
+    recorder, _ = await _run(mcp_registry, ["github", "mcp__never_connected"])
+    assert [t.name for t in recorder.tools] == ["github"]
 
 
 async def test_非法枚举值在调用前被拦下(registry: ToolRegistry) -> None:
