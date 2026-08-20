@@ -15,7 +15,12 @@ from teamai.domain.ports.conversation import (
 from teamai.domain.ports.cooldown import AmbientCooldown
 from teamai.domain.ports.dedup import EventDeduplicator
 from teamai.domain.ports.embedding import Embedder
-from teamai.domain.ports.llm import LLMGateway, LLMResult, TokenBudgetExceeded
+from teamai.domain.ports.llm import (
+    CheckpointSink,
+    LLMGateway,
+    LLMResult,
+    TokenBudgetExceeded,
+)
 from teamai.domain.ports.mcp import (
     McpConnectionError,
     McpConnectorFactory,
@@ -29,6 +34,7 @@ from teamai.domain.ports.uow import UnitOfWork
 
 __all__ = [
     "AmbientCooldown",
+    "CheckpointSink",
     "Embedder",
     "EventDeduplicator",
     "LLMGateway",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Protocol
 
 from teamai.domain.ports.tools import ToolBundle
 
@@ -42,6 +43,26 @@ class TokenBudgetExceeded(Exception):
     """
 
 
+class CheckpointSink(Protocol):
+    """执行中途的持久化回调，用于 worker 崩溃后续跑。
+
+    ``messages`` 对领域**不透明** —— 只有实现方（gateway）知道它实际是什么，
+    调用方只负责原样存起来、下次原样传回 ``run(history=...)``。与
+    :data:`ToolBundle` 同一套理由：若在领域层重新描述消息结构，就得由
+    infrastructure 翻译回 SDK 对象，而翻译层一旦失真，表现是续跑时上下文
+    少一段、模型照着残缺历史继续答，没有任何报错。
+
+    ``tokens_total`` 是**本段**（本次 run）截至此刻的累计消耗，不含续跑前
+    各段。调用方要自己加基数才是任务总量 —— 这样才能让 ``token_limit``
+    与「当前剩余配额」直接对应，详见 gateway 实现的说明。
+
+    实现方须保证异常不外抛：gateway 会兜住并只记 warning。「检查点落不下」
+    远好于「让一次正在成功的 run 失败」—— 前者最坏是崩溃后从更早的点重来。
+    """
+
+    async def __call__(self, messages: bytes, tokens_total: int) -> None: ...
+
+
 class LLMGateway(ABC):
     """一次模型调用。实现方负责模型选择、重试与工具执行循环。"""
 
@@ -54,6 +75,8 @@ class LLMGateway(ABC):
         system_prompt: str = "",
         tools: ToolBundle | None = None,
         token_limit: int | None = None,
+        history: bytes | None = None,
+        on_checkpoint: CheckpointSink | None = None,
     ) -> LLMResult:
         """执行一次调用并返回输出与 token 消耗。
 
@@ -63,5 +86,15 @@ class LLMGateway(ABC):
             system_prompt: 系统提示词。
             tools: 已按频道权限裁剪的工具集，见 :data:`ToolBundle`。
             token_limit: 本次调用的 token 上限；触达时抛 :class:`TokenBudgetExceeded`。
+            history: 续跑起点 —— 此前某次调用在干净轮边界上留下的消息历史
+                （由 ``on_checkpoint`` 交出）。**非空时 ``prompt`` 被忽略**：
+                原始提问就是历史的第一条，再给一次会被 SDK 拒绝。这个取舍收在
+                实现方内部，调用方照常传 prompt 即可。
+            on_checkpoint: 非空时，实现方应在每个**干净**的轮边界回调它一次。
+                「干净」指历史里没有未被应答的工具调用 —— 带悬空调用的历史无法
+                用于续跑。纯文本轮次不必回调：那种轮次重跑只花 token、无副作用，
+                不值得付持久化的代价。
+
+        两个新增参数都可选，不传即退回「一次调用、中途不可观测」的原有行为。
         """
         ...
