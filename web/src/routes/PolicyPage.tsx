@@ -6,11 +6,13 @@ import {
   Card,
   Checkbox,
   Col,
+  Divider,
   Empty,
   Flex,
   Input,
   InputNumber,
   Row,
+  Segmented,
   Select,
   Space,
   Typography,
@@ -84,6 +86,9 @@ export function PolicyPage() {
 
   const [tools, setTools] = useState<string[]>([])
   const [rules, setRules] = useState<AmbientRule[]>([])
+  /** 工具名 → 需要几个批准。不在这个 map 里即不需要审批。 */
+  const [approvals, setApprovals] = useState<Record<string, number>>({})
+  const [approverIds, setApproverIds] = useState<string[]>([])
   /** 首次载入完成前不渲染表单，否则会闪一下空选项再跳成真值。 */
   const [ready, setReady] = useState(false)
 
@@ -97,11 +102,15 @@ export function PolicyPage() {
     if (policy.data) {
       setTools(policy.data.allowed_tools)
       setRules(policy.data.ambient_rules)
+      setApprovals(policy.data.approval_required_tools ?? {})
+      setApproverIds(policy.data.approver_ids ?? [])
       setReady(true)
     } else if (policy.error?.isNotFound) {
       // 未配过策略：空白名单起步。空白名单即「一个工具都不给」，这是安全的默认
       setTools([])
       setRules([])
+      setApprovals({})
+      setApproverIds([])
       setReady(true)
     }
   }, [policy.data, policy.error])
@@ -109,7 +118,12 @@ export function PolicyPage() {
   const save = async () => {
     setSaving(true)
     try {
-      await policyApi.set(channelId, { allowed_tools: tools, ambient_rules: rules })
+      await policyApi.set(channelId, {
+        allowed_tools: tools,
+        ambient_rules: rules,
+        approval_required_tools: approvals,
+        approver_ids: approverIds,
+      })
       message.success('已保存')
       policy.reload()
     } catch (err) {
@@ -118,6 +132,22 @@ export function PolicyPage() {
       setSaving(false)
     }
   }
+
+  /** 切换某个工具要不要审批。取消勾选即从 map 里删掉（而非置 0）。 */
+  const toggleApproval = (tool: string, on: boolean) =>
+    setApprovals((prev) => {
+      const next = { ...prev }
+      if (on) next[tool] = next[tool] || 1
+      else delete next[tool]
+      return next
+    })
+
+  const setApprovalCount = (tool: string, count: number) =>
+    setApprovals((prev) => ({ ...prev, [tool]: count }))
+
+  // 配了需审批的工具却没有审批人 = 那些工具永远不能执行。后端会报 422，
+  // 但在这里先拦住并说清后果，比让用户撞一个错误更好。
+  const approvalsWithoutApprover = Object.keys(approvals).length > 0 && approverIds.length === 0
 
   const addRule = () =>
     setRules((prev) => [...prev, { trigger: 'thread_stale', params: {}, action: 'nudge' }])
@@ -210,6 +240,84 @@ export function PolicyPage() {
                 )}
               </Flex>
             )}
+          </Card>
+
+          <Card title="人工审批" style={{ marginTop: 16 }}>
+            <Flex vertical gap={12}>
+              <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
+                勾中的工具在执行前会停下来等人批准。发起人不能批准自己的操作 ——
+                需要另一位审批人确认。
+              </Typography.Paragraph>
+
+              {tools.length === 0 ? (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="先在左边勾选工具，再决定哪些需要审批"
+                />
+              ) : (
+                <Flex vertical gap={10}>
+                  {tools.map((name) => (
+                    <Flex key={name} align="center" justify="space-between" gap={8}>
+                      <Checkbox
+                        checked={name in approvals}
+                        onChange={(e) => toggleApproval(name, e.target.checked)}
+                      >
+                        <Typography.Text className="mono">{name}</Typography.Text>
+                      </Checkbox>
+                      {name in approvals && (
+                        <Segmented
+                          size="small"
+                          value={approvals[name]}
+                          onChange={(v: string | number) => setApprovalCount(name, Number(v))}
+                          options={[
+                            { label: '1 人批', value: 1 },
+                            { label: '2 人批', value: 2 },
+                          ]}
+                        />
+                      )}
+                    </Flex>
+                  ))}
+                </Flex>
+              )}
+
+              <Divider style={{ margin: '4px 0' }} />
+
+              <Flex vertical gap={6}>
+                <Typography.Text strong style={{ fontSize: 13 }}>
+                  审批人
+                </Typography.Text>
+                <Select
+                  mode="tags"
+                  value={approverIds}
+                  onChange={setApproverIds}
+                  placeholder="填平台用户 ID，回车确认（如 U024BE7LH / ou_xxx）"
+                  style={{ width: '100%' }}
+                  tokenSeparators={[',', ' ']}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  任务有指定负责人时由他批准，否则用这里的名单。两者都没有时，
+                  需审批的工具**不会执行** —— 而不是放行。
+                </Typography.Text>
+              </Flex>
+
+              {approvalsWithoutApprover && (
+                <Alert
+                  type="error"
+                  showIcon
+                  title="配了需审批的工具但没有审批人"
+                  description="这些工具将永远无法执行。请填写审批人，或取消勾选。"
+                />
+              )}
+
+              {Object.values(approvals).some((n) => n >= 2) && approverIds.length === 1 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  title="双人审批需要至少两位审批人"
+                  description="只有一位审批人时，需要 2 人批准的工具永远凑不够数（同一人点两次不算）。"
+                />
+              )}
+            </Flex>
           </Card>
         </Col>
 

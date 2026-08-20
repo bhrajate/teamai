@@ -23,6 +23,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import { lightTheme } from '../src/theme'
 
+import { ApprovalPage } from '../src/routes/ApprovalPage'
 import { AuditPage } from '../src/routes/AuditPage'
 import { BudgetPage } from '../src/routes/BudgetPage'
 import { ChannelListPage } from '../src/routes/ChannelListPage'
@@ -56,6 +57,7 @@ const CASES: [string, React.ComponentType, string][] = [
   ['InteractionPage', InteractionPage, `/channels/${CH}/interactions`],
   // 单任务视图是另一条分支：走 listByTask、多出筛选条、排序反向
   ['InteractionPage(task)', InteractionPage, `/channels/${CH}/interactions?task=tsk_smoke`],
+  ['ApprovalPage', ApprovalPage, `/channels/${CH}/approvals`],
   ['AuditPage', AuditPage, `/channels/${CH}/audit`],
   // 全局变更视图是另一条分支：走 listGlobal、文案与空态都不同
   ['AuditPage(global)', AuditPage, `/channels/${CH}/audit?scope=global`],

@@ -6,6 +6,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from '@/components/AppLayout'
 import { darkTheme, lightTheme } from '@/theme'
 
+import { ApprovalPage } from '@/routes/ApprovalPage'
 import { AuditPage } from '@/routes/AuditPage'
 import { BudgetPage } from '@/routes/BudgetPage'
 import { ChannelListPage } from '@/routes/ChannelListPage'
@@ -65,6 +66,7 @@ export function App() {
               <Route path="/channels/:channelId/skills" element={<ChannelSkillPage />} />
               <Route path="/channels/:channelId/mcp" element={<McpServerPage />} />
               <Route path="/channels/:channelId/interactions" element={<InteractionPage />} />
+              <Route path="/channels/:channelId/approvals" element={<ApprovalPage />} />
               <Route path="/channels/:channelId/audit" element={<AuditPage />} />
               {/* 技能库是全局资源（各频道勾选启用），故不在 /channels 下 */}
               <Route path="/skills" element={<SkillPage />} />

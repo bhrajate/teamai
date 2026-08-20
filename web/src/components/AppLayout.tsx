@@ -8,6 +8,7 @@ import {
   MessageOutlined,
   MoonOutlined,
   SafetyCertificateOutlined,
+  SafetyOutlined,
   SettingOutlined,
   SunOutlined,
   TagsOutlined,
@@ -36,6 +37,8 @@ const RESOURCE_ITEMS = [
   // 标签由人打 /名字，技能由模型看描述后自行判断相关性
   { key: 'skills', icon: <BookOutlined />, label: '技能' },
   { key: 'mcp', icon: <ApiOutlined />, label: 'MCP 服务器' },
+  // 待审批紧跟权限策略：需审批的工具就在那页配，看到有东西等批时顺手能去改配置
+  { key: 'approvals', icon: <SafetyOutlined />, label: '待审批' },
   // 交互记录紧邻审计：两者都是留痕,但前者答「模型看到了什么」,后者答「做了什么动作」
   { key: 'interactions', icon: <MessageOutlined />, label: '交互记录' },
   { key: 'audit', icon: <AuditOutlined />, label: '审计' },

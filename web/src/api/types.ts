@@ -178,7 +178,48 @@ export type Policy = {
   channel_instance_id: string
   allowed_tools: string[]
   ambient_rules: AmbientRule[]
+  /**
+   * 需要人工批准的工具 → 需要几个批准。1 = 单人批，2 = 四眼原则的双批。
+   *
+   * MCP server 级配置会被它的动态工具继承（配 `mcp__deploy` 则
+   * `mcp__deploy__*` 全继承），与 allowed_tools 的 server 级挂载对称。
+   */
+  approval_required_tools: Record<string, number>
+  /**
+   * 频道级审批人。审批人的第二级来源，第一级是任务的负责人（owner_id）。
+   *
+   * ⚠️ 这个列表为空且任务无负责人时，需审批的工具**拒绝执行**而非放宽 ——
+   * 与 allowed_tools 的语义一致（白名单里没有的工具不是「谁都能用」）。
+   */
+  approver_ids: string[]
   updated_at: string
+}
+
+/**
+ * adapters/admin/serializers.py pending_approval_to_dict —— 一个待审批的操作。
+ *
+ * ⚠️ 控制台**只能看，不能批**。放行要回频道线程里打 `/approve` —— Admin API
+ * 只有一个共享令牌，审批的审计链不该建在不可信的 actor 上。`thread_ref` 就是
+ * 为此带出来的：用户看完得知道回哪个线程。
+ */
+export type PendingApproval = {
+  task_id: string
+  channel_instance_id: string
+  thread_ref: string
+  /** 发起人。也正是**不能批准这个操作的那个人**（四眼原则）。 */
+  requester_id: string
+  /** 任务负责人。非空时他就是唯一审批人（优先于频道名单）。 */
+  owner_id: string | null
+  intent: string
+  tool_call_id: string
+  tool_name: string
+  /** 模型给出的参数，**完整未截断** —— 审批人得看全才能判断。 */
+  args: Record<string, unknown>
+  required: number
+  approved_by: string[]
+  /** `已批/需要`，如 `1/2`。 */
+  progress: string
+  created_at: string
 }
 
 export type AuditLog = {

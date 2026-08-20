@@ -18,6 +18,7 @@ import type {
   ChannelSkills,
   Memory,
   MemoryType,
+  PendingApproval,
   Policy,
   Skill,
   SkillFile,
@@ -117,13 +118,35 @@ export const policyApi = {
   get: (channelId: string, signal?: AbortSignal) =>
     request<Policy>(`/channels/${channelId}/policy`, { signal }),
 
+  /**
+   * ⚠️ 配了 `approval_required_tools` 却不给 `approver_ids` 会被后端拒（422）：
+   * 那些工具将永远无法执行。反过来「只配审批人」是允许的。
+   */
   set: (
     channelId: string,
-    body: { allowed_tools: string[]; ambient_rules: AmbientRule[]; actor?: string },
+    body: {
+      allowed_tools: string[]
+      ambient_rules: AmbientRule[]
+      approval_required_tools?: Record<string, number>
+      approver_ids?: string[]
+      actor?: string
+    },
   ) => request<Policy>(`/channels/${channelId}/policy`, { method: 'PUT', body }),
 
   /** 已注册的工具名。硬编码一份会随 build_tools() 增删而漂移。 */
   tools: (signal?: AbortSignal) => request<string[]>('/tools', { signal }),
+}
+
+/**
+ * admin/approval.py —— 待审批操作。**只读**。
+ *
+ * 没有 approve/deny 方法，这是有意的：Admin API 只有一个共享令牌，actor 是
+ * 前端随便填的，而审批的审计链不该建在不可信字段上。放行要回频道线程里打
+ * `/approve`（那里的 user_id 是平台签过名的）。
+ */
+export const approvalApi = {
+  list: (channelId: string, signal?: AbortSignal) =>
+    request<PendingApproval[]>(`/channels/${channelId}/approvals`, { signal }),
 }
 
 /** admin/audit.py */
