@@ -15,9 +15,12 @@ import type {
   Interaction,
   McpServer,
   McpTestResult,
+  ChannelSkills,
   Memory,
   MemoryType,
   Policy,
+  Skill,
+  SkillFile,
   Tag,
   Task,
 } from '@/api/types'
@@ -127,6 +130,16 @@ export const policyApi = {
 export const auditApi = {
   list: (channelId: string, limit = 200, signal?: AbortSignal) =>
     request<AuditLog[]>(`/channels/${channelId}/audit`, { query: { limit }, signal }),
+
+  /**
+   * 全局资源的变更流水（目前只有技能库：技能是全局定义的，改正文这个动作
+   * 没有频道可归属）。
+   *
+   * 专门端点而非 `/channels/global/audit` —— 后端用哪个哨兵值存这些记录是它的
+   * 内部约定，不该在前端再写一份。
+   */
+  listGlobal: (limit = 200, signal?: AbortSignal) =>
+    request<AuditLog[]>('/audit/global', { query: { limit }, signal }),
 }
 
 /**
@@ -195,4 +208,81 @@ export const mcpApi = {
   /** 连接测试：传 url + headers，成功返回该 server 暴露的工具名。 */
   test: (channelId: string, body: { url: string; headers?: Record<string, string> }) =>
     request<McpTestResult>(`/channels/${channelId}/mcp-servers/test`, { method: 'POST', body }),
+}
+
+/**
+ * admin/skill.py —— 技能管理。
+ *
+ * 本控制台里唯一的**全局**资源：技能定义一份，各频道勾选启用。故这里的路径
+ * 分两组 —— `/skills*` 是全局库，`/channels/{id}/skills` 是某频道的启用集合。
+ *
+ * 改动即时生效，不需要重启 worker（对比 mcpApi：那边要重启才装载）。
+ */
+export const skillApi = {
+  /** 全局库，带正文与文件摘要。 */
+  list: (signal?: AbortSignal) => request<Skill[]>('/skills', { signal }),
+
+  create: (body: {
+    name: string
+    description: string
+    content: string
+    enabled?: boolean
+    actor?: string
+  }) => request<Skill>('/skills', { method: 'POST', body }),
+
+  /** 只传要改的字段；未传的后端不动。 */
+  update: (
+    skillId: string,
+    body: Partial<Pick<Skill, 'name' | 'description' | 'content' | 'enabled'>> & {
+      actor?: string
+    },
+  ) => request<Skill>(`/skills/${skillId}`, { method: 'PUT', body }),
+
+  remove: (skillId: string, actor?: string) =>
+    request<{ ok: boolean }>(`/skills/${skillId}`, { method: 'DELETE', query: { actor } }),
+
+  // ---- 附带文件 ----
+
+  /** 单个文件，**带内容**。列表只给摘要，编辑时经此单取。 */
+  getFile: (skillId: string, fileId: string, signal?: AbortSignal) =>
+    request<SkillFile>(`/skills/${skillId}/files/${fileId}`, { signal }),
+
+  /**
+   * 新建文件。后端校验路径形态与 64 KB 上限（按 UTF-8 字节），
+   * 同技能内路径重复报 409。
+   */
+  createFile: (
+    skillId: string,
+    body: { path: string; description: string; content: string; actor?: string },
+  ) => request<SkillFile>(`/skills/${skillId}/files`, { method: 'POST', body }),
+
+  updateFile: (
+    skillId: string,
+    fileId: string,
+    body: Partial<Pick<SkillFile, 'path' | 'description' | 'content'>> & { actor?: string },
+  ) => request<SkillFile>(`/skills/${skillId}/files/${fileId}`, { method: 'PUT', body }),
+
+  removeFile: (skillId: string, fileId: string, actor?: string) =>
+    request<{ ok: boolean }>(`/skills/${skillId}/files/${fileId}`, {
+      method: 'DELETE',
+      query: { actor },
+    }),
+
+  // ---- 频道启用 ----
+
+  /** 全局库 + 该频道勾选状态，一次取回。 */
+  forChannel: (channelId: string, signal?: AbortSignal) =>
+    request<ChannelSkills>(`/channels/${channelId}/skills`, { signal }),
+
+  /**
+   * 覆盖式设置该频道启用的技能：传最终应启用的完整 id 列表。
+   *
+   * 不存在的 id 会被后端静默丢弃，返回的 `enabled_ids` 才是实际生效的集合
+   * （管理页的勾选基于上一次拉到的列表，期间有人删了技能时会有幽灵 id）。
+   */
+  setForChannel: (channelId: string, skillIds: string[], actor?: string) =>
+    request<{ enabled_ids: string[] }>(`/channels/${channelId}/skills`, {
+      method: 'PUT',
+      body: { skill_ids: skillIds, actor },
+    }),
 }

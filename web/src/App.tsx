@@ -9,6 +9,7 @@ import { darkTheme, lightTheme } from '@/theme'
 import { AuditPage } from '@/routes/AuditPage'
 import { BudgetPage } from '@/routes/BudgetPage'
 import { ChannelListPage } from '@/routes/ChannelListPage'
+import { ChannelSkillPage } from '@/routes/ChannelSkillPage'
 import { InteractionPage } from '@/routes/InteractionPage'
 import { McpServerPage } from '@/routes/McpServerPage'
 import { MemoryPage } from '@/routes/MemoryPage'
@@ -16,6 +17,7 @@ import { NotFoundPage } from '@/routes/NotFoundPage'
 import { OverviewPage } from '@/routes/OverviewPage'
 import { PolicyPage } from '@/routes/PolicyPage'
 import { SettingsPage } from '@/routes/SettingsPage'
+import { SkillPage } from '@/routes/SkillPage'
 import { TagPage } from '@/routes/TagPage'
 import { TaskPage } from '@/routes/TaskPage'
 
@@ -60,9 +62,12 @@ export function App() {
               <Route path="/channels/:channelId/budget" element={<BudgetPage />} />
               <Route path="/channels/:channelId/policy" element={<PolicyPage />} />
               <Route path="/channels/:channelId/tags" element={<TagPage />} />
+              <Route path="/channels/:channelId/skills" element={<ChannelSkillPage />} />
               <Route path="/channels/:channelId/mcp" element={<McpServerPage />} />
               <Route path="/channels/:channelId/interactions" element={<InteractionPage />} />
               <Route path="/channels/:channelId/audit" element={<AuditPage />} />
+              {/* 技能库是全局资源（各频道勾选启用），故不在 /channels 下 */}
+              <Route path="/skills" element={<SkillPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>

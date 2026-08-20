@@ -12,6 +12,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useState } from 'react'
 import { Button } from 'antd'
+import { useSearchParams } from 'react-router-dom'
 
 import { auditApi } from '@/api'
 import type { AuditLog } from '@/api/types'
@@ -31,17 +32,42 @@ import { formatFromNow, formatNumber, formatTime } from '@/lib/format'
 /** 后端 limit 默认 100。给几档常用值，不做无上限翻页 —— 审计是只增表。 */
 const LIMITS = [100, 200, 500]
 
+/**
+ * 审计流水，两个作用域。
+ *
+ * 「全局」是不隶属任何频道的变更 —— 目前只有技能库（技能是全局定义、按频道启用
+ * 的，改正文这个动作没有频道可归属）。没有这个入口的话，技能库的增删改在控制台
+ * 里完全看不到。
+ *
+ * 作用域走 URL（`?scope=global`）而非组件 state，与 InteractionPage 的 `?task=`
+ * 同一套做法：刷新与分享链接都能回到同一个视图。
+ */
 export function AuditPage() {
   const channelId = useChannelId()
+  const [params, setParams] = useSearchParams()
   const [limit, setLimit] = useState(200)
   const [detail, setDetail] = useState<AuditLog | null>(null)
 
+  // 只认 'global'，其余（含拼错的 ?scope=globl）一律回落到频道视图 ——
+  // 拼错时显示空白比显示频道流水更难排查
+  const scope = params.get('scope') === 'global' ? 'global' : 'channel'
+
+  const setScope = (next: string) => {
+    const p = new URLSearchParams(params)
+    if (next === 'global') p.set('scope', 'global')
+    else p.delete('scope')  // 默认视图不留参数，URL 保持干净
+    setParams(p, { replace: true })  // replace：切换视图不该堆浏览器历史
+  }
+
   const state = useAsync(
     useCallback(
-      (signal: AbortSignal) => auditApi.list(channelId, limit, signal),
-      [channelId, limit],
+      (signal: AbortSignal) =>
+        scope === 'global'
+          ? auditApi.listGlobal(limit, signal)
+          : auditApi.list(channelId, limit, signal),
+      [channelId, limit, scope],
     ),
-    [channelId, limit],
+    [channelId, limit, scope],
   )
 
   const columns: ColumnsType<AuditLog> = [
@@ -120,9 +146,21 @@ export function AuditPage() {
     <>
       <PageHeader
         title="审计"
-        description="每个动作留一条记录，仅追加不可改。工具被拒、预算耗尽这类事件都在这里。"
+        description={
+          scope === 'global'
+            ? '全局资源的变更流水（技能库的增删改）。这些动作不隶属任何频道，故单列一档。'
+            : '每个动作留一条记录，仅追加不可改。工具被拒、预算耗尽这类事件都在这里。'
+        }
         extra={
           <Space>
+            <Segmented
+              value={scope}
+              onChange={(v) => setScope(v as string)}
+              options={[
+                { label: '本频道', value: 'channel' },
+                { label: '全局变更', value: 'global' },
+              ]}
+            />
             <Segmented
               value={limit}
               onChange={(v) => setLimit(v as number)}
@@ -139,7 +177,13 @@ export function AuditPage() {
         {(list) =>
           list.length === 0 ? (
             <Card>
-              <EmptyBlock description="这个频道还没有审计记录" />
+              <EmptyBlock
+                description={
+                  scope === 'global'
+                    ? '还没有全局变更记录。在技能库里增删改技能后会出现在这里。'
+                    : '这个频道还没有审计记录'
+                }
+              />
             </Card>
           ) : (
             <Card styles={{ body: { padding: 0 } }}>

@@ -1,6 +1,7 @@
 import {
   ApiOutlined,
   AuditOutlined,
+  BookOutlined,
   BulbOutlined,
   DatabaseOutlined,
   DeploymentUnitOutlined,
@@ -31,6 +32,9 @@ const RESOURCE_ITEMS = [
   { key: 'budget', icon: <WalletOutlined />, label: '预算' },
   { key: 'policy', icon: <SafetyCertificateOutlined />, label: '权限策略' },
   { key: 'tags', icon: <TagsOutlined />, label: '标签' },
+  // 标签与技能紧邻：两者都是「给 AI 的预设指令」，区别只在谁触发 ——
+  // 标签由人打 /名字，技能由模型看描述后自行判断相关性
+  { key: 'skills', icon: <BookOutlined />, label: '技能' },
   { key: 'mcp', icon: <ApiOutlined />, label: 'MCP 服务器' },
   // 交互记录紧邻审计：两者都是留痕,但前者答「模型看到了什么」,后者答「做了什么动作」
   { key: 'interactions', icon: <MessageOutlined />, label: '交互记录' },
@@ -45,6 +49,9 @@ export function AppLayout({ dark, onToggleDark }: { dark: boolean; onToggleDark:
   /** 选中项由 URL 反推，从而刷新页面与前进后退都能对上。 */
   const selectedKey = useMemo(() => {
     if (pathname.startsWith('/settings')) return 'settings'
+    // 全局技能库。必须在下面那个 !channelId 分支之前判 —— 否则它没有 channelId，
+    // 会被当成「全部频道」而高亮错的条目
+    if (pathname.startsWith('/skills')) return 'skills'
     if (!channelId) return 'channels'
     const tail = pathname.split(`/channels/${channelId}`)[1]?.replace(/^\//, '') ?? ''
     return `res:${tail}`
@@ -56,6 +63,13 @@ export function AppLayout({ dark, onToggleDark }: { dark: boolean; onToggleDark:
         key: 'channels',
         icon: <ThunderboltOutlined />,
         label: <Link to="/channels">全部频道</Link>,
+      },
+      // 技能库与「全部频道」同级：它是全局资源（定义一份，各频道勾选启用），
+      // 不属于任何一个频道，故不能放进下面的「当前频道」组
+      {
+        key: 'skills',
+        icon: <BookOutlined />,
+        label: <Link to="/skills">技能库</Link>,
       },
     ]
 

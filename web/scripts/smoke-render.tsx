@@ -26,12 +26,15 @@ import { lightTheme } from '../src/theme'
 import { AuditPage } from '../src/routes/AuditPage'
 import { BudgetPage } from '../src/routes/BudgetPage'
 import { ChannelListPage } from '../src/routes/ChannelListPage'
+import { ChannelSkillPage } from '../src/routes/ChannelSkillPage'
 import { InteractionPage } from '../src/routes/InteractionPage'
+import { McpServerPage } from '../src/routes/McpServerPage'
 import { ConflictResolution, MemoryPage } from '../src/routes/MemoryPage'
 import { NotFoundPage } from '../src/routes/NotFoundPage'
 import { OverviewPage } from '../src/routes/OverviewPage'
 import { PolicyPage } from '../src/routes/PolicyPage'
 import { SettingsPage } from '../src/routes/SettingsPage'
+import { SkillPage } from '../src/routes/SkillPage'
 import { TagPage } from '../src/routes/TagPage'
 import { TaskPage } from '../src/routes/TaskPage'
 
@@ -46,10 +49,16 @@ const CASES: [string, React.ComponentType, string][] = [
   ['BudgetPage', BudgetPage, `/channels/${CH}/budget`],
   ['PolicyPage', PolicyPage, `/channels/${CH}/policy`],
   ['TagPage', TagPage, `/channels/${CH}/tags`],
+  ['ChannelSkillPage', ChannelSkillPage, `/channels/${CH}/skills`],
+  // McpServerPage 此前漏登记（这个 smoke 是唯一能抓渲染期崩溃的地方），一并补上
+  ['McpServerPage', McpServerPage, `/channels/${CH}/mcp`],
+  ['SkillPage', SkillPage, '/skills'],
   ['InteractionPage', InteractionPage, `/channels/${CH}/interactions`],
   // 单任务视图是另一条分支：走 listByTask、多出筛选条、排序反向
   ['InteractionPage(task)', InteractionPage, `/channels/${CH}/interactions?task=tsk_smoke`],
   ['AuditPage', AuditPage, `/channels/${CH}/audit`],
+  // 全局变更视图是另一条分支：走 listGlobal、文案与空态都不同
+  ['AuditPage(global)', AuditPage, `/channels/${CH}/audit?scope=global`],
   ['SettingsPage', SettingsPage, '/settings'],
   ['NotFoundPage', NotFoundPage, '/nope'],
 ]

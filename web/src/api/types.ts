@@ -274,3 +274,71 @@ export type McpServer = {
 export type McpTestResult = {
   tools: string[]
 }
+
+/**
+ * domain/models/skill.py Skill —— 技能（全局定义、按频道启用）。
+ *
+ * 与 Tag 的分工是**触发方式**：tag 由人打 `/名字` 触发，skill 由模型看清单后
+ * 自行判断相关性再调 `load_skill` 载入。故 skill 走渐进式披露三级：
+ * 系统提示词只常驻 `name: description`，正文与文件清单在 load_skill 时给，
+ * 文件内容要再调 read_skill_file。
+ *
+ * `description` 是这里最要紧的字段：它是模型判断「该不该用这个技能」的唯一依据，
+ * 且每次调用都常驻系统提示词，故后端限长 200 字。
+ *
+ * 改动**不需要重启 worker**（skill 每次 run 从库里读），这与 McpServer 相反。
+ */
+export type Skill = {
+  id: string
+  name: string
+  description: string
+  content: string
+  /** 全局停用。停用后所有频道立刻失效，与逐个频道取消勾选不同。 */
+  enabled: boolean
+  /** 附带文件的**摘要**（无内容）。取内容用 skillApi.getFile。 */
+  files: SkillFileSummary[]
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * 附带文件的摘要形状（列表里嵌套用）。
+ *
+ * 不含 content：每文件上限 64 KB，列表里全带上会让响应膨胀到
+ * 64 KB × 文件数 × 技能数。
+ */
+export type SkillFileSummary = {
+  id: string
+  skill_id: string
+  path: string
+  description: string
+  /**
+   * UTF-8 字节数，由后端算。
+   *
+   * ⚠️ 不要在前端按字符数算并与 64 KB 比 —— 一个汉字 3 字节，会出现
+   * 「前端认为没超、后端拒掉」。
+   */
+  size_bytes: number
+}
+
+/** 附带文件的完整形状，含内容。编辑单个文件时用。 */
+export type SkillFile = SkillFileSummary & {
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * 频道技能页的一次性响应：全局库 + 该频道的勾选状态。
+ *
+ * 合成一个而非打两次：分两次取会在「另一人正在增删技能」时让勾选指向不存在的行。
+ *
+ * `enabled_ids` **不过滤全局 enabled** —— 它答的是「这个频道勾了哪些」。
+ * 全局停用的技能在此仍带勾，但对应 `skills[].enabled` 为 false，
+ * 前端据此显示成「已停用」而不是把勾去掉（否则管理员会以为关联关系丢了）。
+ */
+export type ChannelSkills = {
+  /** 全局库的摘要（无正文、无文件）—— 勾选只需要名字与描述。 */
+  skills: Pick<Skill, 'id' | 'name' | 'description' | 'enabled'>[]
+  enabled_ids: string[]
+}
