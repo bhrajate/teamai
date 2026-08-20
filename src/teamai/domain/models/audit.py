@@ -30,6 +30,16 @@ class AuditAction(Enum):
     AMBIENT_TRIGGER = "ambient_trigger"
 
 
+# 不隶属任何频道的变更所用的 channel_instance_id。
+#
+# audit_logs.channel_instance_id 非空，而有些被审计的资源是全局的（skill 库就是
+# 第一个）。用固定串而非留空的两个理由：审计表里要能一眼看出「这条不是某个频道
+# 的事」；且按频道查审计时不会把全局变更混进任意一个频道的流水里。
+#
+# 与真实频道 id 不会冲突：那些由 gen_id("ch") 生成，形如 ``ch_<26 位 ULID>``。
+GLOBAL_SCOPE = "global"
+
+
 class AuditResult(Enum):
     SUCCESS = "SUCCESS"
     FAILURE = "FAILURE"
