@@ -1,5 +1,3 @@
-- skill
-- mcp
 - 跨 channel 记忆
 - agent 可观测性
 - agent 评测
