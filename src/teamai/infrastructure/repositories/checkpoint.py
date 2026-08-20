@@ -2,14 +2,63 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from teamai.domain.models.approval import ApprovalRecord, PendingApproval
 from teamai.domain.models.checkpoint import TaskCheckpoint
 from teamai.domain.repositories.checkpoint import CheckpointRepository
 from teamai.infrastructure.orm.checkpoint import TaskCheckpointModel
+
+
+def _dump_pending(p: PendingApproval) -> str:
+    """PendingApproval → JSON 字符串。
+
+    手写而非 dataclasses.asdict：datetime 不是 JSON 原生类型，asdict 出来的
+    嵌套 dict 还要再遍历一遍改它，不如直接写清楚。
+    """
+    return json.dumps(
+        {
+            "tool_call_id": p.tool_call_id,
+            "tool_name": p.tool_name,
+            "args": p.args,
+            "required": p.required,
+            "approvals": [
+                {
+                    "user_id": a.user_id,
+                    "at": a.at.isoformat(),
+                    "override_args": a.override_args,
+                }
+                for a in p.approvals
+            ],
+            "created_at": p.created_at.isoformat(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _load_pending(raw: str) -> PendingApproval:
+    data = json.loads(raw)
+    return PendingApproval(
+        tool_call_id=data["tool_call_id"],
+        tool_name=data["tool_name"],
+        args=data.get("args") or {},
+        # int() 兜一层：库里若因手工改动成了字符串，required 静默变 0 会让
+        # satisfied 恒为 True —— 工具直接放行，审批形同虚设。
+        required=int(data.get("required", 1)),
+        approvals=[
+            ApprovalRecord(
+                user_id=a["user_id"],
+                at=datetime.fromisoformat(a["at"]),
+                override_args=a.get("override_args"),
+            )
+            for a in data.get("approvals", [])
+        ],
+        created_at=datetime.fromisoformat(data["created_at"]),
+    )
 
 
 def _to_domain(m: TaskCheckpointModel) -> TaskCheckpoint:
@@ -85,3 +134,66 @@ class SQLCheckpointRepository(CheckpointRepository):
         attempts = (await self._session.execute(stmt)).scalars().first()
         await self._session.flush()
         return int(attempts or 0)
+
+    # ---- 工具审批 ----
+
+    async def set_pending_approval(
+        self, task_id: str, messages: bytes, pending: PendingApproval
+    ) -> None:
+        """记下待批项 + 当前历史。行不存在时一并建出来。
+
+        待批可能发生在**第一轮**工具调用上 —— 那时还没落过任何检查点，故这里
+        必须能建新行，不能假定行已存在。
+        """
+        now = datetime.now(UTC)
+        blob = _dump_pending(pending)
+        stmt = select(TaskCheckpointModel).where(TaskCheckpointModel.task_id == task_id)
+        existing = (await self._session.execute(stmt)).scalars().first()
+        if existing is None:
+            self._session.add(
+                TaskCheckpointModel(
+                    task_id=task_id,
+                    messages=messages,
+                    tokens_used=0,
+                    attempts=0,
+                    pending_approval=blob,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            existing.messages = messages
+            existing.pending_approval = blob
+            existing.updated_at = now
+            # tokens_used 与 attempts 不动：前者由检查点回调维护，后者是续跑
+            # 计数。审批不是续跑，不该让它影响那两个。
+        await self._session.flush()
+
+    async def get_pending_approval(self, task_id: str) -> PendingApproval | None:
+        stmt = select(TaskCheckpointModel.pending_approval).where(
+            TaskCheckpointModel.task_id == task_id
+        )
+        raw = (await self._session.execute(stmt)).scalars().first()
+        return _load_pending(raw) if raw else None
+
+    async def clear_pending_approval(self, task_id: str) -> None:
+        """只清待批项，**留着 messages** —— 恢复执行正要用它。"""
+        await self._session.execute(
+            update(TaskCheckpointModel)
+            .where(TaskCheckpointModel.task_id == task_id)
+            .values(pending_approval=None, updated_at=datetime.now(UTC))
+        )
+        await self._session.flush()
+
+    async def list_pending_before(self, cutoff: datetime) -> list[str]:
+        """在 cutoff 之前就开始等审批的 task_id。
+
+        按 updated_at 筛而非 created_at：created_at 是「检查点首次出现」，
+        而待批可能发生在任务跑了很久之后 —— 用它会把刚开始等的任务也判超时。
+        updated_at 在 set_pending_approval 时被刷新，正是「开始等」的时刻。
+        """
+        stmt = select(TaskCheckpointModel.task_id).where(
+            TaskCheckpointModel.pending_approval.is_not(None),
+            TaskCheckpointModel.updated_at < cutoff,
+        )
+        return list((await self._session.execute(stmt)).scalars().all())

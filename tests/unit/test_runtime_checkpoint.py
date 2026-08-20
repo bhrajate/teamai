@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from teamai.application.agent.context import ContextBundle
 from teamai.application.agent.runtime import AgentRuntime, StageStatus
 from teamai.config import Settings
 from teamai.domain.models import ChannelInstance, PermissionPolicy, Task
+from teamai.domain.models.approval import PendingApproval
 from teamai.domain.models.checkpoint import TaskCheckpoint
 from teamai.domain.ports import LLMGateway, LLMResult, TokenBudgetExceeded, ToolBundle
 from teamai.domain.repositories.checkpoint import CheckpointRepository
@@ -70,6 +73,7 @@ class FakeCheckpoints(CheckpointRepository):
             self.store[initial.task_id] = initial
         self.upserts: list[tuple[str, bytes, int]] = []
         self.deleted: list[str] = []
+        self.pending: dict[str, PendingApproval] = {}
 
     async def get(self, task_id: str) -> TaskCheckpoint | None:
         return self.store.get(task_id)
@@ -95,6 +99,29 @@ class FakeCheckpoints(CheckpointRepository):
         cp.attempts += 1
         return cp.attempts
 
+
+    # ---- 审批（本组不测审批，给足空实现即可）----
+
+    async def set_pending_approval(
+        self, task_id: str, messages: bytes, pending: PendingApproval
+    ) -> None:
+        self.pending[task_id] = pending
+        old = self.store.get(task_id)
+        self.store[task_id] = TaskCheckpoint(
+            task_id=task_id,
+            messages=messages,
+            tokens_used=old.tokens_used if old else 0,
+            attempts=old.attempts if old else 0,
+        )
+
+    async def get_pending_approval(self, task_id: str) -> PendingApproval | None:
+        return self.pending.get(task_id)
+
+    async def clear_pending_approval(self, task_id: str) -> None:
+        self.pending.pop(task_id, None)
+
+    async def list_pending_before(self, cutoff: datetime) -> list[str]:
+        return list(self.pending)
 
 class SpyBudget:
     """记下 consume 的调用序列。remaining 可配。"""

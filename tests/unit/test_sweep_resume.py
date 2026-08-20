@@ -15,6 +15,7 @@ import pytest
 
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.domain.models import AuditLog, Task, TaskStatus
+from teamai.domain.models.approval import PendingApproval
 from teamai.domain.models.checkpoint import TaskCheckpoint
 from teamai.domain.ports import QueuePayload
 from teamai.domain.repositories.checkpoint import CheckpointRepository
@@ -63,6 +64,7 @@ class FakeCheckpoints(CheckpointRepository):
     def __init__(self, store: dict[str, TaskCheckpoint] | None = None) -> None:
         self.store = store or {}
         self.deleted: list[str] = []
+        self.pending: dict[str, PendingApproval] = {}
         self.bumped: list[str] = []
 
     async def get(self, task_id: str) -> TaskCheckpoint | None:
@@ -89,6 +91,29 @@ class FakeCheckpoints(CheckpointRepository):
         cp.attempts += 1
         return cp.attempts
 
+
+    # ---- 审批（本组不测审批，给足空实现即可）----
+
+    async def set_pending_approval(
+        self, task_id: str, messages: bytes, pending: PendingApproval
+    ) -> None:
+        self.pending[task_id] = pending
+        old = self.store.get(task_id)
+        self.store[task_id] = TaskCheckpoint(
+            task_id=task_id,
+            messages=messages,
+            tokens_used=old.tokens_used if old else 0,
+            attempts=old.attempts if old else 0,
+        )
+
+    async def get_pending_approval(self, task_id: str) -> PendingApproval | None:
+        return self.pending.get(task_id)
+
+    async def clear_pending_approval(self, task_id: str) -> None:
+        self.pending.pop(task_id, None)
+
+    async def list_pending_before(self, cutoff: datetime) -> list[str]:
+        return list(self.pending)
 
 def _task(status: TaskStatus = TaskStatus.RUNNING, tid: str = "task_1") -> Task:
     t = Task(

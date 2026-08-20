@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
+from teamai.domain.models.approval import PendingApproval
 from teamai.domain.models.checkpoint import TaskCheckpoint
 
 
@@ -38,5 +40,49 @@ class CheckpointRepository(ABC):
 
         用一条 UPDATE 原子自增而非「读-改-写」：巡检可能与别的写入并发，
         读改写会丢计数，而丢计数意味着一个反复崩溃的任务可以无限续跑。
+        """
+        ...
+
+    # ---- 工具审批 ----
+    #
+    # 与检查点同一张表：两者都是同一任务的执行期状态，主键都是 task_id，
+    # 终态时一起清。理由见 orm/checkpoint.py。
+
+    @abstractmethod
+    async def set_pending_approval(
+        self, task_id: str, messages: bytes, pending: PendingApproval
+    ) -> None:
+        """记下待批的工具调用，连同当前消息历史。
+
+        ``messages`` 一并写：恢复执行要靠它 —— 审批通过后是「拿这段历史 +
+        批准结果继续跑」，而不是从头重跑。
+
+        与 :meth:`upsert` 分开而非加一个可选参数：那个是「跑到干净边界了」，
+        这个是「卡住等人」，两者对任务状态的含义相反（前者 RUNNING 继续，
+        后者转 WAITING_INPUT）。合成一个方法会让调用点必须先判断自己在哪种
+        情形，而判断依据只有传不传那个参数 —— 等于把语义藏进参数的有无里。
+        """
+        ...
+
+    @abstractmethod
+    async def get_pending_approval(self, task_id: str) -> PendingApproval | None:
+        """取待批项。None 表示该任务没有在等审批。"""
+        ...
+
+    @abstractmethod
+    async def clear_pending_approval(self, task_id: str) -> None:
+        """清掉待批项，保留检查点本身。
+
+        审批有结果（批准/拒绝/超时）后调用：待批状态结束，但消息历史仍要留着 ——
+        恢复执行正要用它，且此后崩溃仍可续跑。
+        """
+        ...
+
+    @abstractmethod
+    async def list_pending_before(self, cutoff: datetime) -> list[str]:
+        """返回在 ``cutoff`` 之前就开始等审批的 task_id。
+
+        供超时巡检用。只返回 id 不返回完整对象：巡检拿到 id 后要连任务一起取，
+        带回完整载荷等于白读一遍那些 blob（每个可能几十 KB）。
         """
         ...
