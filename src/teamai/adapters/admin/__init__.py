@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from teamai.adapters.admin.approval import build_approval_router
 from teamai.adapters.admin.audit import build_audit_router
 from teamai.adapters.admin.auth import require_admin_token
 from teamai.adapters.admin.budget import build_budget_router
@@ -47,6 +48,7 @@ def build_admin_router(container: Container) -> APIRouter:
         build_interaction_router,
         build_mcp_router,
         build_skill_router,
+        build_approval_router,
     ):
         router.include_router(build(container), dependencies=[Depends(require_admin_token)])
 

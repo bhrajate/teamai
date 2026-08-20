@@ -15,6 +15,7 @@ from teamai.domain.models import (
     ChannelInstance,
     McpServer,
     MemoryEntry,
+    PendingApproval,
     PermissionPolicy,
     Skill,
     SkillFile,
@@ -96,7 +97,38 @@ def policy_to_dict(policy: PermissionPolicy) -> dict[str, Any]:
         "ambient_rules": [
             {"trigger": r.trigger, "params": r.params, "action": r.action} for r in policy.ambient_rules
         ],
+        # 工具名 → 需要几个批准。1 = 单人批，2 = 四眼原则的双批。
+        "approval_required_tools": policy.approval_required_tools,
+        # 频道级审批人。⚠️ 这个列表为空且任务无 owner_id 时，需审批的工具
+        # **拒绝执行**而非放宽 —— 前端要把这个后果说清楚。
+        "approver_ids": policy.approver_ids,
         "updated_at": policy.updated_at.isoformat(),
+    }
+
+
+def pending_approval_to_dict(pending: PendingApproval, task: Task) -> dict[str, Any]:
+    """待审批项 + 它所属任务的必要字段。
+
+    带上 ``requester_id``：前端要能显示「谁发起的」，而那正是**不能批准它的
+    那个人**（四眼原则）。带上 ``thread_ref``：控制台不放行，用户看完要回线程
+    里 ``/approve``，得知道是哪个线程。
+
+    ``args`` 原样带出、不截断：审批人必须看全参数才能判断，截断等于让人盲签。
+    """
+    return {
+        "task_id": task.id,
+        "channel_instance_id": task.channel_instance_id,
+        "thread_ref": task.thread_ref,
+        "requester_id": task.requester_id,
+        "owner_id": task.owner_id,
+        "intent": task.intent,
+        "tool_call_id": pending.tool_call_id,
+        "tool_name": pending.tool_name,
+        "args": pending.args,
+        "required": pending.required,
+        "approved_by": sorted(pending.approved_by),
+        "progress": pending.progress,
+        "created_at": pending.created_at.isoformat(),
     }
 
 

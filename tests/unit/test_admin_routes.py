@@ -65,6 +65,9 @@ EXPECTED_ROUTES = {
     ("DELETE", "/api/skills/{skill_id}"),
     ("GET", "/api/channels/{channel_instance_id}/skills"),
     ("PUT", "/api/channels/{channel_instance_id}/skills"),
+    # 待审批列表。**只读** —— 放行必须回频道线程做，因为 Admin API 的 actor
+    # 是前端随便填的，而审批的审计链不该建在不可信字段上（SPEC §6.4）。
+    ("GET", "/api/channels/{channel_instance_id}/approvals"),
     # 附带文件挂在 skill 下：一个文件脱离它的 skill 没有意义，
     # 且 path 的唯一性是「同一 skill 内」而非全局。
     ("GET", "/api/skills/{skill_id}/files/{file_id}"),
