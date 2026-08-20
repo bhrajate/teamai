@@ -144,6 +144,10 @@ async def reset_budget_periods(container: Container) -> None:
 async def sweep_stale_tasks(container: Container) -> None:
     """任务超时巡检。独立 session 与异常兜底的理由同上。
 
+    卡住的 RUNNING 有两种出路：有执行检查点的重新入队续跑（已完成的工具不重跑），
+    没有或已超续跑上限的收敛到 FAILED。故三类结局分别记日志 —— 续跑是正常自愈，
+    用 info；判死要人看，用 warning。
+
     失败单独记 error：巡检对每个任务分别兜异常，若只看 swept 就会把「找到 5 个
     全都推进失败」当成「一个都没卡住」。
     """
@@ -152,6 +156,12 @@ async def sweep_stale_tasks(container: Container) -> None:
             report = await scope.orchestrator.sweep_stale_tasks(
                 pending_timeout=timedelta(minutes=settings.jobs_pending_timeout_minutes),
                 running_timeout=timedelta(minutes=settings.jobs_running_timeout_minutes),
+                max_resume_attempts=settings.jobs_max_resume_attempts,
+            )
+        if report.resumed:
+            logger.info(
+                f"超时巡检: {len(report.resumed)} 个任务从检查点续跑: "
+                f"{[t.id for t in report.resumed]}"
             )
         if report.swept:
             logger.warning(

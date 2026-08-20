@@ -192,6 +192,14 @@ class Settings(BaseSettings):
     # RUNNING 超时：worker 取走后执行中。设计上长任务是小时/天级，故给足 24h；
     # 超过它更可能是 worker 崩在半路、任务永远停在 RUNNING。
     jobs_running_timeout_minutes: int = 24 * 60
+    # 单个任务最多从检查点续跑几次，超过即收敛到 FAILED。
+    #
+    # 有上限而非无限重试：一个每次都崩在同一处的任务（工具打的外部服务挂了、
+    # 提示词让模型进了死循环）会一直续跑一直烧 token，而每次续跑还要重发累积
+    # 历史，越跑越贵。3 次足够跨过一次部署或一次外部抖动。
+    #
+    # 设为 0 即关闭续跑，行为退回改造前（崩溃一律收敛 FAILED）。
+    jobs_max_resume_attempts: int = 3
 
     # admin_api.*
     admin_api_host: str = "0.0.0.0"

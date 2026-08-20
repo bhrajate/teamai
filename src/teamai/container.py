@@ -40,6 +40,7 @@ from teamai.domain.repositories import (
     AuditRepository,
     BudgetRepository,
     ChannelRepository,
+    CheckpointRepository,
     InteractionRepository,
     McpServerRepository,
     MemoryRepository,
@@ -70,6 +71,7 @@ from teamai.infrastructure.repositories import (
     SQLAuditRepository,
     SQLBudgetRepository,
     SQLChannelRepository,
+    SQLCheckpointRepository,
     SQLInteractionRepository,
     SQLMcpServerRepository,
     SQLMemoryRepository,
@@ -99,6 +101,7 @@ class Container:
     channel_repo: ChannelRepository
     mcp_repo: McpServerRepository
     skill_repo: SkillRepository
+    checkpoint_repo: CheckpointRepository
     audit_repo: AuditRepository
     interaction_repo: InteractionRepository
     queue: TaskQueue
@@ -191,6 +194,7 @@ def build_container() -> Container:
     channel_repo = SQLChannelRepository(session)
     mcp_repo = SQLMcpServerRepository(session)
     skill_repo = SQLSkillRepository(session)
+    checkpoint_repo = SQLCheckpointRepository(session)
     audit_repo = SQLAuditRepository(session)
     interaction_repo = SQLInteractionRepository(session)
 
@@ -236,7 +240,8 @@ def build_container() -> Container:
     gateway = PydanticAIGateway(ModelConfig.from_settings(settings))
 
     audit = AuditLogWriter(audit_repo)
-    orchestrator = TaskOrchestrator(task_repo, audit, queue)
+    # 检查点交给 orchestrator（终态时清理）与 runtime（续跑起点 + 增量计费）
+    orchestrator = TaskOrchestrator(task_repo, audit, queue, checkpoint_repo)
     budget = BudgetController(budget_repo, audit)
     memory = MemoryService(
         memory_repo,
@@ -278,7 +283,9 @@ def build_container() -> Container:
     # MCP server 的装载是启动后的异步步骤（worker 引导处调用 load_and_register），
     # 这里只装配服务本身；web 进程不装载，故不存在会话泄漏。
     mcp = McpService(mcp_repo, tools, uow, ConnectorFactory())
-    runtime = AgentRuntime(gateway, tools, budget, audit, settings, interactions)
+    runtime = AgentRuntime(
+        gateway, tools, budget, audit, settings, interactions, checkpoint_repo
+    )
     intent = IntentClassifier()
     router = MessageRouter(
         orchestrator=orchestrator,
@@ -304,6 +311,7 @@ def build_container() -> Container:
         channel_repo=channel_repo,
         mcp_repo=mcp_repo,
         skill_repo=skill_repo,
+        checkpoint_repo=checkpoint_repo,
         audit_repo=audit_repo,
         interaction_repo=interaction_repo,
         queue=queue,
@@ -389,7 +397,15 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
         )
         yield JobScope(
             budget=budget,
-            orchestrator=TaskOrchestrator(SQLTaskRepository(session), audit, container.queue),
+            # 检查点仓储必须建在**本 scope 的 session** 上，不能借用容器那份 ——
+            # 两者并发使用同一个 AsyncSession 会撞「another operation is in
+            # progress」，正是本函数文档描述的那类故障。
+            orchestrator=TaskOrchestrator(
+                SQLTaskRepository(session),
+                audit,
+                container.queue,
+                SQLCheckpointRepository(session),
+            ),
             distiller=MemoryDistiller(
                 container.window,
                 memory,

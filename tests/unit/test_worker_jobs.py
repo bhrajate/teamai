@@ -50,15 +50,26 @@ class FakeOrchestrator:
         swept: list[Task] | None = None,
         failed: list[tuple[str, str]] | None = None,
         raises: Exception | None = None,
+        resumed: list[Task] | None = None,
     ) -> None:
-        self.report = SweepReport(swept=swept or [], failed=failed or [])
+        self.report = SweepReport(
+            swept=swept or [], failed=failed or [], resumed=resumed or []
+        )
         self.raises = raises
         self.calls: list[tuple[timedelta, timedelta]] = []
+        # 续跑上限单独记：它来自配置，job 必须把它传下去，否则续跑能力
+        # 装配好了却永不生效
+        self.resume_limits: list[int] = []
 
     async def sweep_stale_tasks(
-        self, pending_timeout: timedelta, running_timeout: timedelta, now: object = None
+        self,
+        pending_timeout: timedelta,
+        running_timeout: timedelta,
+        now: object = None,
+        max_resume_attempts: int = 0,
     ) -> SweepReport:
         self.calls.append((pending_timeout, running_timeout))
+        self.resume_limits.append(max_resume_attempts)
         if self.raises is not None:
             raise self.raises
         return self.report
@@ -238,6 +249,32 @@ async def test_巡检job传入配置的阈值(monkeypatch: pytest.MonkeyPatch) -
     await W.sweep_stale_tasks(_container())
 
     assert orch.calls == [(timedelta(minutes=15), timedelta(minutes=600))]
+
+
+async def test_巡检job传入续跑上限(monkeypatch: pytest.MonkeyPatch) -> None:
+    """漏传的表现是续跑能力装配好了却永不生效 —— 默认 0 即关闭。"""
+    monkeypatch.setattr(W.settings, "jobs_max_resume_attempts", 5)
+    orch = FakeOrchestrator()
+    _patch_job_scope(monkeypatch, FakeBudget(), orch)
+
+    await W.sweep_stale_tasks(_container())
+
+    assert orch.resume_limits == [5]
+
+
+async def test_巡检job记录续跑的任务(monkeypatch: pytest.MonkeyPatch) -> None:
+    """续跑是正常自愈，与「判死」分开记 —— 后者要人看。"""
+    task = Task(
+        id="task_r",
+        channel_instance_id="ch1",
+        thread_ref="ts1",
+        requester_id="u1",
+        intent="ask",
+    )
+    orch = FakeOrchestrator(resumed=[task])
+    _patch_job_scope(monkeypatch, FakeBudget(), orch)
+
+    await W.sweep_stale_tasks(_container())  # 不该抛，且不该记 warning
 
 
 async def test_巡检job吞掉异常(monkeypatch: pytest.MonkeyPatch) -> None:
