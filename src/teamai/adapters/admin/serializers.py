@@ -16,6 +16,8 @@ from teamai.domain.models import (
     McpServer,
     MemoryEntry,
     PermissionPolicy,
+    Skill,
+    SkillFile,
     TagTemplate,
     Task,
 )
@@ -153,6 +155,73 @@ def interaction_to_dict(record: AgentInteraction) -> dict[str, Any]:
         "error": record.error,
         "context_refs": record.context_refs,
         "created_at": record.created_at.isoformat(),
+    }
+
+
+def skill_file_to_dict(file: SkillFile) -> dict[str, Any]:
+    """附带文件的完整形状，含内容。
+
+    带内容：管理页要能就地编辑文件。这与列表接口的取舍不同 —— 见
+    ``skill_to_dict`` 里对 files 的说明。
+    """
+    return {
+        "id": file.id,
+        "skill_id": file.skill_id,
+        "path": file.path,
+        "description": file.description,
+        "content": file.content,
+        # 字节数由后端算并回显：前端按字符数算会与 64 KB 上限对不上
+        # （一个汉字 3 字节），导致「明明没超」却被后端拒掉
+        "size_bytes": file.size_bytes,
+        "created_at": file.created_at.isoformat(),
+        "updated_at": file.updated_at.isoformat(),
+    }
+
+
+def skill_file_summary_to_dict(file: SkillFile) -> dict[str, Any]:
+    """不含内容的文件摘要，供 skill 列表里嵌套展示。
+
+    列表页要显示「这个技能带了哪几个文件」，但把每个文件的内容都带上会让
+    列表响应膨胀到不可用（每文件上限 64 KB × 文件数 × 技能数）。
+    编辑某个文件时再单取。
+    """
+    return {
+        "id": file.id,
+        "skill_id": file.skill_id,
+        "path": file.path,
+        "description": file.description,
+        "size_bytes": file.size_bytes,
+    }
+
+
+def skill_to_dict(skill: Skill) -> dict[str, Any]:
+    """完整形状，含正文与文件摘要。全局库的管理页要直接编辑正文，故必须带。
+
+    files 只给摘要（无内容）：理由见 ``skill_file_summary_to_dict``。
+    """
+    return {
+        "id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "content": skill.content,
+        "enabled": skill.enabled,
+        "files": [skill_file_summary_to_dict(f) for f in skill.files],
+        "created_at": skill.created_at.isoformat(),
+        "updated_at": skill.updated_at.isoformat(),
+    }
+
+
+def skill_summary_to_dict(skill: Skill) -> dict[str, Any]:
+    """不含正文的摘要形状，供频道启用页勾选用。
+
+    与 ``skill_to_dict`` 分开而非加个 query 参数：频道页要列出全部技能供勾选，
+    每条正文都是几 KB 散文，全带上会让这个响应比它承载的信息大两个数量级。
+    """
+    return {
+        "id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "enabled": skill.enabled,
     }
 
 

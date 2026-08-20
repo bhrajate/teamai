@@ -23,6 +23,7 @@ from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.projector import MemoryProjector
 from teamai.application.reconciler import MemoryReconciler
 from teamai.application.router import MessageRouter
+from teamai.application.skill import SkillService
 from teamai.application.tag import TagResolver
 from teamai.config import settings
 from teamai.domain.ports import (
@@ -44,6 +45,7 @@ from teamai.domain.repositories import (
     MemoryRepository,
     OutboxRepository,
     PolicyRepository,
+    SkillRepository,
     TagRepository,
     TaskRepository,
 )
@@ -73,6 +75,7 @@ from teamai.infrastructure.repositories import (
     SQLMemoryRepository,
     SQLOutboxRepository,
     SQLPolicyRepository,
+    SQLSkillRepository,
     SQLTagRepository,
     SQLTaskRepository,
 )
@@ -95,6 +98,7 @@ class Container:
     budget_repo: BudgetRepository
     channel_repo: ChannelRepository
     mcp_repo: McpServerRepository
+    skill_repo: SkillRepository
     audit_repo: AuditRepository
     interaction_repo: InteractionRepository
     queue: TaskQueue
@@ -125,6 +129,7 @@ class Container:
     tags: TagResolver
     channels: ChannelService
     mcp: McpService
+    skills: SkillService
     runtime: AgentRuntime
     router: MessageRouter
     tools: ToolRegistry
@@ -185,6 +190,7 @@ def build_container() -> Container:
     budget_repo = SQLBudgetRepository(session)
     channel_repo = SQLChannelRepository(session)
     mcp_repo = SQLMcpServerRepository(session)
+    skill_repo = SQLSkillRepository(session)
     audit_repo = SQLAuditRepository(session)
     interaction_repo = SQLInteractionRepository(session)
 
@@ -264,6 +270,9 @@ def build_container() -> Container:
     )
     tags = TagResolver(tag_repo, audit)
     channels = ChannelService(channel_repo, policy_repo, audit)
+    # skill 不需要启动装载：正文每次 agent run 从库里读，改完即生效。
+    # 与 mcp 相反 —— 那边要在启动时建长连接，故有 load_and_register 这一步。
+    skills = SkillService(skill_repo, audit, uow)
 
     tools = build_tools()
     # MCP server 的装载是启动后的异步步骤（worker 引导处调用 load_and_register），
@@ -282,6 +291,7 @@ def build_container() -> Container:
         policy_repo=policy_repo,
         conversation=conversation,
         distiller=distiller,
+        skills=skills,
     )
 
     return Container(
@@ -293,6 +303,7 @@ def build_container() -> Container:
         budget_repo=budget_repo,
         channel_repo=channel_repo,
         mcp_repo=mcp_repo,
+        skill_repo=skill_repo,
         audit_repo=audit_repo,
         interaction_repo=interaction_repo,
         queue=queue,
@@ -314,6 +325,7 @@ def build_container() -> Container:
         tags=tags,
         channels=channels,
         mcp=mcp,
+        skills=skills,
         runtime=runtime,
         router=router,
         tools=tools,

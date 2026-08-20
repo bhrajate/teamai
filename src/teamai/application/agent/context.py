@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from teamai.domain.models import ChannelInstance, MemoryEntry, PermissionPolicy, TagTemplate
+from teamai.domain.models import ChannelInstance, MemoryEntry, PermissionPolicy, Skill, TagTemplate
 from teamai.domain.ports import ThreadMessage
 
 
@@ -27,6 +27,16 @@ class ContextBundle:
     # 而不是把「历史只有这么多」当成事实。
     dropped_history: int = 0
     tag: TagTemplate | None = None
+    # 本频道已启用且全局未停用的 skill，含正文。
+    #
+    # 带正文而非只带 id/描述：正文要交给 load_skill 工具做内存查表。工具执行在
+    # agent run 进行中，那时再查库会复用共享 AsyncSession（不允许并发使用）——
+    # 详见 domain/ports/tools.py 的 for_channel 文档。
+    #
+    # 代价是每次 run 都把全部启用 skill 的正文读进内存，即便一个都没被载入。
+    # 这是 DB 读而非 token 支出，且 skill 数量是「管理员手工配的」量级，
+    # 相比让工具自己查库要承担的会话风险，这笔代价划算。
+    skills: list[Skill] = field(default_factory=list)
 
     @property
     def memory_context(self) -> str:
@@ -61,6 +71,26 @@ class ContextBundle:
         if self.dropped_history > 0:
             lines.insert(0, f"[更早的 {self.dropped_history} 条已省略，如需细节请明确询问]")
         return "\n".join(lines)
+
+    @property
+    def skill_catalog(self) -> str:
+        """技能清单（每行 ``- name: description``），供系统提示词渲染。
+
+        只有名字与描述，没有正文 —— 正文由模型判断相关后调 ``load_skill`` 取回。
+        """
+        if not self.skills:
+            return ""
+        return "\n".join(s.catalog_line for s in self.skills)
+
+    @property
+    def skill_ref_names(self) -> list[str]:
+        """本次 run 挂上的技能名，供交互记录留痕。
+
+        留的是「当时挂了哪些可选项」，不是「模型实际载入了哪几个」—— 后者发生在
+        run 内部的工具往返里，用例层看不到。排查「为什么没用某个技能」时，先要能
+        区分「它没挂上」与「挂上了但模型判断不相关」，这个字段答的是前者。
+        """
+        return [s.name for s in self.skills]
 
     @property
     def memory_ref_ids(self) -> list[str]:
@@ -99,4 +129,7 @@ class ContextBundle:
             thread_history=self.thread_history[-max_history:],
             dropped_history=self.dropped_history + dropped,
             tag=self.tag,
+            # ⚠️ 漏掉这行的表现极隐蔽：压缩只在历史超阈值时发生，于是「聊得久的
+            # 线程里技能突然全部消失」，而短线程一切正常。
+            skills=list(self.skills),
         )

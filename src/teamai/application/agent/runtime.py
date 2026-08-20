@@ -92,7 +92,9 @@ class AgentRuntime:
             return result
 
     async def _run_agent(self, task: Task, bundle: ContextBundle) -> StageResult:
-        tools = self._tools.for_channel(bundle.allowed_tools)
+        # skills 一并传下去：本频道启用了 skill 时，工具集里要多一个 load_skill。
+        # 它不受 allowed_tools 管制（启用即授权，见 domain/ports/tools.py）。
+        tools = self._tools.for_channel(bundle.allowed_tools, bundle.skills)
         remaining = await self._budget.remaining(task.channel_instance_id)
         prompt = self._compose_prompt(bundle)
 
@@ -164,6 +166,8 @@ class AgentRuntime:
                 "dropped_history": bundle.dropped_history,
                 "allowed_tools": list(bundle.allowed_tools),
                 "tag": bundle.tag.name if bundle.tag else None,
+                # 挂上的技能名（不是实际载入的，见 ContextBundle.skill_ref_names）
+                "skills": bundle.skill_ref_names,
             },
         )
 

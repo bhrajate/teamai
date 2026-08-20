@@ -25,6 +25,7 @@ from teamai.application.events import IncomingMessage
 from teamai.application.intent import IntentClassifier
 from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
+from teamai.application.skill import SkillService
 from teamai.application.tag import TagResolver
 from teamai.domain.models import ChannelInstance, Task, TaskStatus
 from teamai.domain.repositories import PolicyRepository
@@ -56,6 +57,7 @@ class MessageRouter:
         policy_repo: PolicyRepository,
         conversation: ConversationService | None = None,
         distiller: MemoryDistiller | None = None,
+        skills: SkillService | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._intent = intent
@@ -67,6 +69,7 @@ class MessageRouter:
         self._policy_repo = policy_repo
         self._conversation = conversation
         self._distiller = distiller
+        self._skills = skills
 
     async def route(self, msg: IncomingMessage) -> RoutingDecision:
         instance = await self._channels.get_or_create(msg.platform, msg.channel_id, msg.workspace_id)
@@ -212,6 +215,13 @@ class MessageRouter:
         memory_hits = await self._memory.query_for_context(task.channel_instance_id, prompt)
         allowed_tools = list(policy.allowed_tools) if policy else []
 
+        # 本频道启用的技能。取的是完整对象（含正文）—— 正文要交给 load_skill 工具
+        # 做内存查表，理由见 ContextBundle.skills 的注释。未装配 SkillService 时
+        # 空着（窄装配与测试场景），技能能力整体不出现，任务照跑。
+        skills = []
+        if self._skills is not None:
+            skills = await self._skills.list_for_channel(task.channel_instance_id)
+
         # 线程历史按需向平台拉取，不自建镜像表 —— 平台是聊天记录的唯一权威源，
         # 理由见 docs/Design-conversation-context.md §2。拉不到就空着，任务照跑。
         thread_history = []
@@ -224,6 +234,7 @@ class MessageRouter:
             role=tag.role if tag else None,
             tag_instruction=tag.instruction if tag else None,
             output_style=tag.output_style if tag else None,
+            skill_catalog="\n".join(s.catalog_line for s in skills),
         )
         bundle = ContextBundle(
             task_id=task.id,
@@ -237,5 +248,6 @@ class MessageRouter:
             memory_hits=memory_hits,
             thread_history=thread_history,
             tag=tag,
+            skills=skills,
         )
         return await self._runtime.run(task, bundle)

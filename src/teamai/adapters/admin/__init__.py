@@ -21,6 +21,7 @@ from teamai.adapters.admin.interaction import build_interaction_router
 from teamai.adapters.admin.mcp import build_mcp_router
 from teamai.adapters.admin.memory import build_memory_router
 from teamai.adapters.admin.policy import build_policy_router
+from teamai.adapters.admin.skill import build_skill_router
 from teamai.adapters.admin.tag import build_tag_router
 from teamai.adapters.admin.task import build_task_router
 from teamai.container import Container
@@ -45,6 +46,7 @@ def build_admin_router(container: Container) -> APIRouter:
         build_tag_router,
         build_interaction_router,
         build_mcp_router,
+        build_skill_router,
     ):
         router.include_router(build(container), dependencies=[Depends(require_admin_token)])
 
