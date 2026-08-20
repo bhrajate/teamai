@@ -37,12 +37,21 @@ from tests.fakes import FakeAuditRepository, FakeBudgetRepository
 
 
 class SpyGateway(LLMGateway):
-    """记下每次调用的参数；可按需模拟 token 超限。"""
+    """记下每次调用的参数；可按需模拟 token 超限与中途检查点。"""
 
-    def __init__(self, *, tokens: int = 120, exceed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        tokens: int = 120,
+        exceed: bool = False,
+        checkpoints: list[int] | None = None,
+    ) -> None:
         self.calls: list[dict] = []
         self._tokens = tokens
         self._exceed = exceed
+        # 要回调的检查点序列，元素是「本段截至此刻的累计 token」。
+        # 用来验证运行时按增量计费，而非每次都扣总量。
+        self._checkpoints = checkpoints or []
 
     async def run(
         self,
@@ -52,6 +61,8 @@ class SpyGateway(LLMGateway):
         system_prompt: str = "",
         tools: ToolBundle | None = None,
         token_limit: int | None = None,
+        history: bytes | None = None,
+        on_checkpoint: object | None = None,
     ) -> LLMResult:
         self.calls.append(
             {
@@ -60,8 +71,13 @@ class SpyGateway(LLMGateway):
                 "system_prompt": system_prompt,
                 "tools": tools,
                 "token_limit": token_limit,
+                "history": history,
+                "on_checkpoint": on_checkpoint,
             }
         )
+        if on_checkpoint is not None:
+            for i, seg in enumerate(self._checkpoints, 1):
+                await on_checkpoint(f"cp-{i}".encode(), seg)  # type: ignore[operator]
         if self._exceed:
             raise TokenBudgetExceeded("token 上限")
         return LLMResult(output="已处理", tokens=self._tokens)
