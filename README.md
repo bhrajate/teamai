@@ -17,6 +17,7 @@
 - **主动介入**：按频道规则在无人 @ 时开口，例如提醒沉寂的线程。两级开关（频道总闸 + 策略里的规则）都开才生效
 - **标签模板**：把角色、指令、输出风格存成可复用的配置，在频道里按名激活（`/名字`，由**人**触发）
 - **技能**：全局维护的「做事规范」，各频道勾选启用，由**模型**按描述自行判断相关性后载入。三级渐进式披露：系统提示词只常驻 `name: description`，正文经 `load_skill` 按需取，附带文件再经 `read_skill_file` 取 —— 故启用数量增长不会线性推高每次调用的 token。见 `docs/SPEC-skill-management.md`
+- **崩溃续跑**：agent 每跑完一个工具轮就把消息历史存进 `task_checkpoints`，worker 崩溃后由超时巡检重新入队，已完成的工具不重跑。默认最多续跑 3 次（`JOBS_MAX_RESUME_ATTEMPTS`），超过收敛 FAILED。见 `docs/SPEC-agent-checkpoint.md`
 - **管理控制台**：`web/` 下的前端，管上面这些配置并看任务与审计
 
 未实现：端到端评测集（`docs/tasklist.md` 第 13 项）。标签的 `shared` 字段目前是空壳 —— 存得下、读得出，但没有任何跨频道共享语义。另有两项进行中的改造见 `tasklist.md` 21.1 / 21.2：除记忆之外的七个仓储还在各自提交事务，且 web 进程仍共用单个数据库会话（`container.py` 里注明了这是 MVP 待改）。
@@ -276,5 +277,6 @@ docker run -v ./config:/app/config:ro --env-file .env -p 8000:8000 teamai:latest
 | `docs/Design-multi-platform.md` | 多平台接入设计 |
 | `docs/Code-Design-Python.md` | 代码结构与分层约定 |
 | `docs/SPEC-skill-management.md` | 技能管理：三级渐进式披露、per-run 工具的会话约束 |
+| `docs/SPEC-agent-checkpoint.md` | Agent 检查点与失败续跑（含 pydantic-ai 行为实测） |
 | `docs/SPEC-mcp-management.md` | MCP server 管理 |
 | `docs/tasklist.md` | 实施进度 |
