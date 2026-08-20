@@ -24,6 +24,9 @@ EXPECTED_ROUTES = {
     ("GET", "/api/channels/{channel_instance_id}"),
     ("PATCH", "/api/channels/{channel_instance_id}"),
     ("GET", "/api/channels/{channel_instance_id}/audit"),
+    # 全局资源（skill 库）的变更流水。专门端点而非 /channels/global/audit：
+    # GLOBAL_SCOPE 的取值约定不该泄到前端。
+    ("GET", "/api/audit/global"),
     ("GET", "/api/channels/{channel_instance_id}/budget"),
     ("GET", "/api/channels/{channel_instance_id}/memories"),
     ("GET", "/api/channels/{channel_instance_id}/policy"),
@@ -54,6 +57,20 @@ EXPECTED_ROUTES = {
     ("PUT", "/api/channels/{channel_instance_id}/mcp-servers/{server_id}"),
     ("DELETE", "/api/channels/{channel_instance_id}/mcp-servers/{server_id}"),
     ("POST", "/api/channels/{channel_instance_id}/mcp-servers/test"),
+    # Skill 管理。两组作用域：全局库的 CRUD，与「某频道启用哪些」。
+    # skill 是本控制台里唯一的全局资源，故这四条不带 channel 前缀。
+    ("GET", "/api/skills"),
+    ("POST", "/api/skills"),
+    ("PUT", "/api/skills/{skill_id}"),
+    ("DELETE", "/api/skills/{skill_id}"),
+    ("GET", "/api/channels/{channel_instance_id}/skills"),
+    ("PUT", "/api/channels/{channel_instance_id}/skills"),
+    # 附带文件挂在 skill 下：一个文件脱离它的 skill 没有意义，
+    # 且 path 的唯一性是「同一 skill 内」而非全局。
+    ("GET", "/api/skills/{skill_id}/files/{file_id}"),
+    ("POST", "/api/skills/{skill_id}/files"),
+    ("PUT", "/api/skills/{skill_id}/files/{file_id}"),
+    ("DELETE", "/api/skills/{skill_id}/files/{file_id}"),
 }
 
 

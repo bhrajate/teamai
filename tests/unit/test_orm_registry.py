@@ -20,9 +20,12 @@ EXPECTED_TABLES = {
     "budget_quotas",
     "channel_instances",
     "mcp_servers",
+    "channel_skills",
     "memory_entries",
     "memory_outbox",
     "permission_policies",
+    "skill_files",
+    "skills",
     "tag_templates",
     "tasks",
 }

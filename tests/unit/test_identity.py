@@ -21,7 +21,13 @@ ULID_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{ULID_LENGTH}}}$")
 ID_COLUMN_LENGTH = 32
 
 # 代码库里实际用到的全部前缀，新增时同步更新
-KNOWN_PREFIXES = ["task", "mem", "tag", "ch", "ai", "pol", "bq", "audit", "itr", "obx", "mcp"]
+# "skill" 与 "audit" 同为 5 字符，正好顶满 id 列的 String(32)（5+1+26）。
+# skill 的附带文件用缩写 "skf" 而非 "skillfile"：后者 9 字符会撑爆该列。
+# 再长的前缀由下面的 test_全部前缀不超出_id_列长度 拦住。
+KNOWN_PREFIXES = [
+    "task", "mem", "tag", "ch", "ai", "pol", "bq", "audit", "itr", "obx", "mcp",
+    "skill", "skf",
+]
 
 
 def test_ulid_长度与字母表() -> None:

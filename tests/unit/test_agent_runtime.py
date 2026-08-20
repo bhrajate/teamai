@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from teamai.application.agent.context import ContextBundle
@@ -20,6 +22,7 @@ from teamai.domain.models import (
     BudgetScope,
     ChannelInstance,
     PermissionPolicy,
+    Skill,
     Task,
 )
 from teamai.domain.ports import (
@@ -65,15 +68,24 @@ class SpyGateway(LLMGateway):
 
 
 class SpyToolProvider:
-    """记下被问过哪些白名单，并返回一个可辨识的假句柄。"""
+    """记下被问过哪些白名单与 skill，并返回一个可辨识的假句柄。"""
 
     def __init__(self, bundle: ToolBundle | None = "<toolset>") -> None:
         self.asked: list[list[str]] = []
+        # 每次 for_channel 收到的 skill 名。运行时必须把 bundle.skills 透传下去，
+        # 否则频道启用了技能而 load_skill 工具挂不上。
+        self.asked_skills: list[list[str]] = []
         self._bundle = bundle
 
-    def for_channel(self, allowed: list[str]) -> ToolBundle | None:
+    def for_channel(
+        self,
+        allowed: list[str],
+        skills: Sequence[Skill] | None = None,
+    ) -> ToolBundle | None:
         self.asked.append(list(allowed))
-        return self._bundle if allowed else None
+        self.asked_skills.append([s.name for s in skills or []])
+        # 有 skill 时即便白名单为空也该有工具集（load_skill 不受白名单管制）
+        return self._bundle if (allowed or skills) else None
 
 
 def _bundle(allowed: list[str], *, history: list[str] | None = None) -> ContextBundle:
