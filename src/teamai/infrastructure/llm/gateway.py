@@ -37,11 +37,19 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import infer_model, parse_model_id
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.providers import Provider, infer_provider, infer_provider_class
+from pydantic_ai.tools import (
+    DeferredToolRequests,
+    DeferredToolResults,
+    ToolApproved,
+    ToolDenied,
+)
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.usage import RunUsage
 
 from teamai.config import Settings
 from teamai.domain.ports import (
+    ApprovalDecision,
+    ApprovalRequest,
     CheckpointSink,
     LLMGateway,
     LLMResult,
@@ -123,6 +131,27 @@ def _total_tokens(usage: Any) -> int:
     return int(getattr(usage, "total_tokens", 0) or 0)
 
 
+def _to_deferred_results(decisions: dict[str, ApprovalDecision]) -> DeferredToolResults:
+    """领域的裁决 → SDK 的 DeferredToolResults。
+
+    批准走 ``ToolApproved``（可带 override_args），拒绝走 ``ToolDenied(reason)``。
+    拒绝理由会被回灌给模型，故它是**给模型看的**文案，不是日志。
+
+    键必须是原来那个 ``tool_call_id`` —— 框架靠它把结果对回具体某次调用，
+    对不上的话那次调用会被当成仍未应答（而带未应答调用的历史是硬错误）。
+    """
+    return DeferredToolResults(
+        approvals={
+            tool_call_id: (
+                ToolApproved(override_args=d.override_args)
+                if d.approved
+                else ToolDenied(d.reason or "未获批准")
+            )
+            for tool_call_id, d in decisions.items()
+        }
+    )
+
+
 def _actual_model_id(result: Any) -> str:
     """从运行结果里取**实际生效**的模型，拼成 `provider:model`。
 
@@ -194,6 +223,7 @@ class PydanticAIGateway(LLMGateway):
         token_limit: int | None = None,
         history: bytes | None = None,
         on_checkpoint: CheckpointSink | None = None,
+        approval_results: dict[str, ApprovalDecision] | None = None,
     ) -> LLMResult:
         toolsets: list[AbstractToolset[Any]] | None = None
         if tools is not None:
@@ -207,9 +237,14 @@ class PydanticAIGateway(LLMGateway):
             self._model(model_level),
             instructions=system_prompt or None,
             toolsets=toolsets,
+            # 挂上 DeferredToolRequests 作为可选产出类型：审批闸拦下调用时，
+            # run 正常结束、output 变成待批清单（而不是抛异常）。不挂的话
+            # ApprovalRequired 会冒到顶层，用例层拿不到「在等什么」。
+            output_type=[str, DeferredToolRequests],
         )
         limits = UsageLimits(total_tokens_limit=max(token_limit, 1)) if token_limit is not None else None
         hist = ModelMessagesTypeAdapter.validate_json(history) if history else None
+        deferred = _to_deferred_results(approval_results) if approval_results else None
 
         try:
             result = await self._iterate(
@@ -218,6 +253,7 @@ class PydanticAIGateway(LLMGateway):
                 hist=hist,
                 limits=limits,
                 on_checkpoint=on_checkpoint,
+                deferred=deferred,
             )
         except UsageLimitExceeded as exc:
             raise TokenBudgetExceeded(str(exc)) from exc
@@ -228,12 +264,32 @@ class PydanticAIGateway(LLMGateway):
         tokens_in = int(getattr(usage, "input_tokens", 0) or 0)
         tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
         total = int(getattr(usage, "total_tokens", 0) or 0) or tokens_in + tokens_out
+
+        # 待批时 output 是 DeferredToolRequests 而非答复文本。转成领域形态并把
+        # 历史一并带出 —— 用例层要靠它恢复执行。
+        pending: list[ApprovalRequest] = []
+        resume_history: bytes | None = None
+        if isinstance(result.output, DeferredToolRequests):
+            pending = [
+                ApprovalRequest(
+                    tool_call_id=call.tool_call_id,
+                    tool_name=call.tool_name,
+                    args=dict(call.args) if isinstance(call.args, dict) else {"_raw": call.args},
+                )
+                for call in result.output.approvals
+            ]
+            resume_history = ModelMessagesTypeAdapter.dump_json(result.all_messages())
+
         return LLMResult(
-            output=str(result.output),
+            # 待批时 output 不是给用户的答复，置空避免调用方误发出去 ——
+            # awaiting_approval 才是判据。
+            output="" if pending else str(result.output),
             tokens=total,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model_id=_actual_model_id(result),
+            pending_approvals=pending,
+            history=resume_history,
         )
 
     @staticmethod
@@ -244,6 +300,7 @@ class PydanticAIGateway(LLMGateway):
         hist: list[ModelMessage] | None,
         limits: UsageLimits | None,
         on_checkpoint: CheckpointSink | None,
+        deferred: DeferredToolResults | None = None,
     ) -> Any:
         """驱动 agent 图，并在干净的轮边界回调 ``on_checkpoint``。
 
@@ -261,6 +318,7 @@ class PydanticAIGateway(LLMGateway):
             message_history=hist,
             usage=RunUsage(),
             usage_limits=limits,
+            deferred_tool_results=deferred,
         ) as run:
             async for node in run:
                 if on_checkpoint is None or not isinstance(node, ModelRequestNode):

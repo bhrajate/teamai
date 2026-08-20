@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
 from teamai.domain.models.skill import Skill
@@ -39,6 +39,7 @@ class ToolProvider(ABC):
         self,
         allowed: list[str],
         skills: Sequence[Skill] | None = None,
+        approvals: Mapping[str, int] | None = None,
     ) -> ToolBundle | None:
         """裁出本次调用可见的工具集。
 
@@ -58,6 +59,14 @@ class ToolProvider(ABC):
         组合根那个共享 ``AsyncSession`` —— 而 AsyncSession 不允许并发使用，
         这正是 ``container.open_job_scope`` 文档里记的那类「another operation
         is in progress」故障，且同样会被 run 的顶层兜底吞成一句错误文本。
+
+        ``approvals`` 是「工具名 → 需要几个批准」（取自
+        :meth:`PermissionPolicy.approvals_needed` 的配置）。其中的工具被调用时，
+        实现方须让本次 run **中断而不执行**，并把待批的调用交回用例层。
+
+        这一层只管「要不要批」；「谁能批、够不够数」是用例层的判定
+        （application/approval.py）—— 那些依赖 task.requester_id 与审批人名单，
+        属业务规则，不该下沉到工具集里。
 
         无任何可用工具且无 skill 时返回 ``None``，表示本次调用不挂工具。
         """

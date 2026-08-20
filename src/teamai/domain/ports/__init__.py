@@ -16,6 +16,8 @@ from teamai.domain.ports.cooldown import AmbientCooldown
 from teamai.domain.ports.dedup import EventDeduplicator
 from teamai.domain.ports.embedding import Embedder
 from teamai.domain.ports.llm import (
+    ApprovalDecision,
+    ApprovalRequest,
     CheckpointSink,
     LLMGateway,
     LLMResult,
@@ -34,6 +36,8 @@ from teamai.domain.ports.uow import UnitOfWork
 
 __all__ = [
     "AmbientCooldown",
+    "ApprovalDecision",
+    "ApprovalRequest",
     "CheckpointSink",
     "Embedder",
     "EventDeduplicator",

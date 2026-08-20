@@ -10,18 +10,54 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic_ai import Tool
-from pydantic_ai.tools import RunContext
-from pydantic_ai.toolsets import FunctionToolset, ToolsetTool, WrapperToolset
+from pydantic_ai.tools import RunContext, ToolDefinition
+from pydantic_ai.toolsets import (
+    AbstractToolset,
+    ApprovalRequiredToolset,
+    FunctionToolset,
+    ToolsetTool,
+    WrapperToolset,
+)
 
 from teamai.domain.models.skill import Skill
 from teamai.domain.ports import ToolBundle, ToolProvider
 from teamai.infrastructure.tools.base import ToolUnavailable, fail
 from teamai.infrastructure.tools.skill_tool import build_skill_file_tool, build_skill_tool
+
+
+def _approval_predicate(
+    approvals: Mapping[str, int],
+) -> Callable[[RunContext[Any], ToolDefinition, dict[str, Any]], bool]:
+    """按工具名判定该次调用要不要人工批准。
+
+    只判「要不要」，**不判「谁能批、够不够数」** —— 那些是用例层的事
+    （见 application/approval.py）。这一层只负责让框架中断执行。
+
+    匹配规则与 ``PermissionPolicy.approvals_needed`` 一致（含 MCP server 级
+    继承），但这里不引 domain 模型：predicate 收到的是 SDK 的 ToolDefinition，
+    而调用方（runtime）已经把策略解成了普通 mapping 传进来。
+
+    predicate 还能拿到 ``args``（实测），故日后要做「同一工具按动作分级」
+    （github 的 read_file 放行、create_pr 要批）无需改结构。
+    """
+
+    def needs_approval(
+        ctx: RunContext[Any], tool_def: ToolDefinition, args: dict[str, Any]
+    ) -> bool:
+        name = tool_def.name
+        if name in approvals:
+            return approvals[name] > 0
+        return any(
+            count > 0 for configured, count in approvals.items()
+            if name.startswith(f"{configured}__")
+        )
+
+    return needs_approval
 
 
 @dataclass
@@ -90,6 +126,7 @@ class ToolRegistry(ToolProvider):
         self,
         allowed: list[str],
         skills: Sequence[Skill] | None = None,
+        approvals: Mapping[str, int] | None = None,
     ) -> ToolBundle | None:
         """按白名单裁出工具集，必要时补上 ``load_skill``。
 
@@ -114,4 +151,15 @@ class ToolRegistry(ToolProvider):
                 selected.append(build_skill_file_tool(skills))
         if not selected:
             return None
-        return _GracefulToolset(FunctionToolset(selected))
+
+        bundle: AbstractToolset[Any] = FunctionToolset(selected)
+        if approvals:
+            # 审批闸包在内层、_GracefulToolset 在外：两种顺序实测都能正常中断，
+            # 但闸在内更贴合语义 —— 它是「该不该执行」，Graceful 是「执行失败了
+            # 怎么呈现」，前者先发生。
+            #
+            # 用 pydantic-ai 的 ApprovalRequiredToolset 而非自己在 call_tool 里
+            # 判：它与框架的 DeferredToolRequests 输出、tool_call_id 分配、以及
+            # 恢复时的 DeferredToolResults 匹配是同一套机制，自己写要复刻那三样。
+            bundle = ApprovalRequiredToolset(bundle, _approval_predicate(approvals))
+        return _GracefulToolset(bundle)

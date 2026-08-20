@@ -9,10 +9,40 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from teamai.domain.ports.tools import ToolBundle
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """对一个待批调用的最终裁决，交给实现方去恢复执行。
+
+    ``approved=False`` 时 ``reason`` 会被回灌给模型 —— 它据此向用户说明「这件事
+    没做，因为…」，而不是当作工具执行失败去重试。所以拒绝理由要写给**模型**看，
+    不是写给日志看。
+
+    ``override_args`` 非空时用它替换模型原本给的参数：审批不是批/否二选一，
+    人可以改完再放行（框架支持，已实测）。
+    """
+
+    approved: bool
+    reason: str = ""
+    override_args: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    """一个因等批准而被拦下的工具调用。
+
+    ``tool_call_id`` 是框架分配的，恢复执行时必须原样传回 —— 它是「这个批准
+    对应哪次调用」的唯一凭据。领域层不解释它的格式。
+    """
+
+    tool_call_id: str
+    tool_name: str
+    args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -33,6 +63,19 @@ class LLMResult:
     tokens_in: int = 0
     tokens_out: int = 0
     model_id: str = ""
+    # 因等人工批准而中断的工具调用。非空即本次 run **没有跑完** ——
+    # `output` 此时不是给用户的答复（框架会把待批清单塞进去），调用方须据此
+    # 把任务转 WAITING_INPUT 而不是回复用户。
+    #
+    # 用 list 而非单个：模型可能在同一轮里发起多个需审批的调用。
+    pending_approvals: list[ApprovalRequest] = field(default_factory=list)
+    # 恢复执行所需的消息历史（与 CheckpointSink 交出的同一形态）。
+    # 有待批时必然非空 —— 批准后要拿它继续跑。
+    history: bytes | None = None
+
+    @property
+    def awaiting_approval(self) -> bool:
+        return bool(self.pending_approvals)
 
 
 class TokenBudgetExceeded(Exception):
@@ -77,6 +120,7 @@ class LLMGateway(ABC):
         token_limit: int | None = None,
         history: bytes | None = None,
         on_checkpoint: CheckpointSink | None = None,
+        approval_results: dict[str, ApprovalDecision] | None = None,
     ) -> LLMResult:
         """执行一次调用并返回输出与 token 消耗。
 
@@ -95,6 +139,10 @@ class LLMGateway(ABC):
                 用于续跑。纯文本轮次不必回调：那种轮次重跑只花 token、无副作用，
                 不值得付持久化的代价。
 
-        两个新增参数都可选，不传即退回「一次调用、中途不可观测」的原有行为。
+            approval_results: 审批结果，键是 ``ApprovalRequest.tool_call_id``。
+                与 ``history`` 配合使用 —— 拿上次中断时的历史 + 这批结果继续跑。
+                批准的工具会执行（可带覆盖参数），拒绝的不执行、理由回灌给模型。
+
+        三个新增参数都可选，不传即退回「一次调用、中途不可观测」的原有行为。
         """
         ...
