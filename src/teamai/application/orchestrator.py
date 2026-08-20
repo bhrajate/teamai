@@ -73,8 +73,14 @@ class TaskOrchestrator:
         *,
         tag_name: str | None = None,
         model_level: str = "light",
+        owner_id: str | None = None,
     ) -> Task:
-        """建任务并落库。不入队 —— 是否转异步由调用方决定，见 enqueue。"""
+        """建任务并落库。不入队 —— 是否转异步由调用方决定，见 enqueue。
+
+        ``owner_id`` 即频道的默认负责人（``ChannelInstance.default_owner_id``），
+        作为工具审批的第一级审批人来源。由调用方把频道配置透传进来 —— orchestrator
+        不查频道，保持「负责人归谁」由上层（router）按上下文决定。
+        """
         task = Task(
             id=gen_id("task"),
             channel_instance_id=channel_instance_id,
@@ -83,6 +89,7 @@ class TaskOrchestrator:
             intent=intent,
             tag_name=tag_name,
             model_level=model_level,
+            owner_id=owner_id,
         )
         await self._repo.create(task)
         await self._audit.record(

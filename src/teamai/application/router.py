@@ -187,6 +187,7 @@ class MessageRouter:
             intent.kind,
             tag_name=tag_name,
             model_level=intent.model_level,
+            owner_id=instance.default_owner_id,
         )
 
         if intent.is_long_running:
