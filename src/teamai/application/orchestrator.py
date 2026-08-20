@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from teamai.domain.identity import gen_id
 from teamai.domain.models import AuditAction, Task, TaskStatus
 from teamai.domain.ports import QueuePayload, TaskQueue
-from teamai.domain.repositories import TaskRepository
+from teamai.domain.repositories import CheckpointRepository, TaskRepository
 from teamai.domain.services import AuditLogWriter
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # 超时巡检推进状态时的 actor。取固定串而非某个真实用户：审计里要能一眼
 # 区分「人取消的」与「系统判超时的」。
 _SWEEPER_ACTOR = "system:timeout-sweeper"
+
+# 终态。进入其中任一状态即清理该任务的执行检查点（见 transition）。
+_TERMINAL_STATUSES = frozenset(
+    {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+)
 
 
 def _utcnow() -> datetime:
@@ -30,9 +35,15 @@ class SweepReport:
     分开记成功与失败，而不是只返回处理成功的那些：巡检对每个任务单独兜异常，
     若失败只写日志不进返回值，调用方就无法区分「没有卡住的任务」和「找到了但
     全都没推进成功」—— 后者是故障，前者是正常。
+
+    `resumed` 与 `swept` 也必须分开：现在有三种结局（续跑 / 收敛失败 / 推进
+    失败），合成一个的话「10 个任务全部续跑了」与「10 个任务全部被判死」在
+    调用方眼里是同一个结果，而前者是正常自愈、后者是需要人看的故障。
     """
 
     swept: list[Task] = field(default_factory=list)
+    # 有检查点、已重新入队续跑的任务。它们仍是 RUNNING，没有状态迁移。
+    resumed: list[Task] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (task_id, 错因)
 
     @property
@@ -46,10 +57,12 @@ class TaskOrchestrator:
         repo: TaskRepository,
         audit: AuditLogWriter,
         queue: TaskQueue,
+        checkpoints: CheckpointRepository | None = None,
     ) -> None:
         self._repo = repo
         self._audit = audit
         self._queue = queue
+        self._checkpoints = checkpoints
 
     async def create_task(
         self,
@@ -83,6 +96,15 @@ class TaskOrchestrator:
 
     async def transition(self, task: Task, to: TaskStatus, actor: str) -> Task:
         task.transition(to, actor)
+        # 进终态即清检查点，与状态更新同一事务。
+        #
+        # 放在这里而不是 AgentRuntime：**所有**终态迁移都经过本方法（含巡检判
+        # 超时、用户取消），放 runtime 会漏掉那两条路径，留下「任务已终结、检查
+        # 点还在」的孤儿 —— 而巡检看到有检查点就会去续跑一个已经结束的任务。
+        #
+        # PAUSED 不在终态里，故预算耗尽时检查点保留 —— 追加配额后从断点续跑。
+        if to in _TERMINAL_STATUSES and self._checkpoints is not None:
+            await self._checkpoints.delete(task.id)
         await self._repo.update(task)
         await self._audit.record(
             task.channel_instance_id,
@@ -104,11 +126,47 @@ class TaskOrchestrator:
             raise ValueError(f"任务已处于终态 {task.status.value}，无法取消")
         return await self.transition(task, TaskStatus.CANCELLED, actor)
 
+    async def _try_resume(self, task: Task, max_attempts: int) -> bool:
+        """有检查点且未超上限时重新入队续跑。返回是否已接手。
+
+        绕开「队列无 ack」的关键：检查点里含完整消息历史，而历史的第一条就是
+        原始 user prompt —— 载荷可以纯从 DB 重建，Redis 里那条被 BLPOP 删掉的
+        消息不再重要。
+        """
+        if self._checkpoints is None:
+            return False
+        checkpoint = await self._checkpoints.get(task.id)
+        if checkpoint is None or checkpoint.attempts >= max_attempts:
+            return False
+
+        attempts = await self._checkpoints.bump_attempts(task.id)
+        # prompt 传空串：原始提问已在检查点里，worker 侧的
+        # `payload.prompt or task.intent` 兜底正好接住。
+        await self.enqueue(task, "")
+        # ⚠️ 状态留在 RUNNING —— 状态机没有 RUNNING→RUNNING 自环，走 transition()
+        # 会抛 InvalidTransition。**不要**为此加自环：那会让「取消 → 重投」这类
+        # 非法路径变得可能，且引入一个观测不到的中间态。
+        #
+        # ⚠️ 但必须刷新 updated_at，否则下一轮巡检立刻又把它捞出来 —— 表现是
+        # 同一任务被无限续跑，且不报任何错。
+        task.updated_at = _utcnow()
+        await self._repo.update(task)
+        await self._audit.record(
+            task.channel_instance_id,
+            AuditAction.TASK_TRANSITION,
+            user_id=_SWEEPER_ACTOR,
+            task_id=task.id,
+            detail={"to": "RUNNING", "event": "resumed", "attempts": attempts},
+        )
+        logger.info(f"任务 {task.id} 从检查点续跑（第 {attempts} 次）")
+        return True
+
     async def sweep_stale_tasks(
         self,
         pending_timeout: timedelta,
         running_timeout: timedelta,
         now: datetime | None = None,
+        max_resume_attempts: int = 0,
     ) -> SweepReport:
         """把卡死的任务收敛到 FAILED。
 
@@ -127,12 +185,20 @@ class TaskOrchestrator:
         """
         moment = now or _utcnow()
         report = SweepReport()
-        for statuses, timeout in (
-            ((TaskStatus.PENDING,), pending_timeout),
-            ((TaskStatus.RUNNING,), running_timeout),
+        for statuses, timeout, resumable in (
+            # PENDING 不参与续跑：它还没开始执行，没有检查点可言。
+            ((TaskStatus.PENDING,), pending_timeout, False),
+            ((TaskStatus.RUNNING,), running_timeout, True),
         ):
             for task in await self._repo.list_stale(statuses, moment - timeout):
                 try:
+                    if (
+                        resumable
+                        and max_resume_attempts > 0
+                        and await self._try_resume(task, max_resume_attempts)
+                    ):
+                        report.resumed.append(task)
+                        continue
                     await self.transition(task, TaskStatus.FAILED, actor=_SWEEPER_ACTOR)
                 except Exception as exc:
                     logger.warning(f"超时巡检推进失败 {task.id}: {exc}")
