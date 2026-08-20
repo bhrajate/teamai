@@ -21,5 +21,9 @@ class PolicyModel(Base):
     channel_instance_id: Mapped[str] = mapped_column(String(32), index=True)
     allowed_tools: Mapped[str] = mapped_column(Text, default="[]")
     ambient_rules: Mapped[str] = mapped_column(Text, default="[]")
+    # 工具名 → 需要几个批准。JSON 对象字符串（其余两列是 JSON 数组，同一套先例）。
+    approval_required_tools: Mapped[str] = mapped_column(Text, default="{}")
+    # 频道级审批人 id。JSON 数组字符串。
+    approver_ids: Mapped[str] = mapped_column(Text, default="[]")
     updated_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

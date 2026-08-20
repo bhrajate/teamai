@@ -1,6 +1,7 @@
 """PolicyRepository 的 SQLAlchemy 实现。
 
-allowed_tools / ambient_rules 在库里是 JSON 数组字符串，读写在此处转换。
+allowed_tools / ambient_rules / approver_ids 在库里是 JSON 数组字符串，
+approval_required_tools 是 JSON 对象字符串，读写在此处转换。
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ def _policy_to_model(p: PermissionPolicy) -> PolicyModel:
         channel_instance_id=p.channel_instance_id,
         allowed_tools=json.dumps(p.allowed_tools),
         ambient_rules=json.dumps([r.__dict__ for r in p.ambient_rules]),
+        approval_required_tools=json.dumps(p.approval_required_tools),
+        approver_ids=json.dumps(p.approver_ids),
         updated_by=p.updated_by,
         updated_at=p.updated_at,
     )
@@ -37,6 +40,12 @@ def _model_to_policy(m: PolicyModel) -> PermissionPolicy:
         channel_instance_id=m.channel_instance_id,
         allowed_tools=tools,
         ambient_rules=rules,
+        # int() 兜一层：JSON 里可能是字符串（管理台手填时）。审批数量为 0
+        # 等于不需要审批，若因类型问题静默变成 0，危险工具就直接放行了。
+        approval_required_tools={
+            k: int(v) for k, v in json.loads(m.approval_required_tools or "{}").items()
+        },
+        approver_ids=json.loads(m.approver_ids or "[]"),
         updated_by=m.updated_by,
         updated_at=m.updated_at,
     )

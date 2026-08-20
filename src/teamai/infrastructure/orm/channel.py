@@ -28,4 +28,7 @@ class ChannelInstanceModel(Base):
     ambient_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     cross_channel_learning: Mapped[bool] = mapped_column(Boolean, default=False)
     policy_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 默认负责人（工具审批的第一级审批人来源）。宽度对齐其余用户 id 列：
+    # 飞书 open_id 是 ou_ + 32 hex，装不下 String(32)。
+    default_owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

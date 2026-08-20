@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, LargeBinary, String
+from sqlalchemy import DateTime, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from teamai.infrastructure.db import Base
@@ -30,5 +30,13 @@ class TaskCheckpointModel(Base):
     messages: Mapped[bytes] = mapped_column(LargeBinary)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # ---- 工具审批（HITL）----
+    #
+    # 与检查点同表：两者都是同一个任务的执行期状态，主键都是 task_id，生命周期
+    # 也一样（终态时一起清）。分表会让「取一个任务的执行状态」变成两次查询，
+    # 且要各自维护清理逻辑。
+    #
+    # 待批的工具调用（PendingApproval 的序列化）。非空即任务卡在 WAITING_INPUT。
+    pending_approval: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

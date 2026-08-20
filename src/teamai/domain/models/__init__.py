@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+from teamai.domain.models.approval import (
+    ApprovalOutcome,
+    ApprovalRecord,
+    PendingApproval,
+)
 from teamai.domain.models.audit import GLOBAL_SCOPE, AuditAction, AuditLog, AuditResult
 from teamai.domain.models.budget import (
     BudgetPeriod,
@@ -27,6 +32,8 @@ from teamai.domain.models.task import InvalidTransition, Task, TaskStatus
 __all__ = [
     "AgentInteraction",
     "AmbientRule",
+    "ApprovalOutcome",
+    "ApprovalRecord",
     "AuditAction",
     "AuditLog",
     "AuditResult",
@@ -44,6 +51,7 @@ __all__ = [
     "MemoryType",
     "OutboxEntry",
     "OutboxOp",
+    "PendingApproval",
     "should_embed",
     "PermissionPolicy",
     "Skill",

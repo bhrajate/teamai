@@ -20,6 +20,7 @@ def _channel_to_model(c: ChannelInstance) -> ChannelInstanceModel:
         ambient_enabled=c.ambient_enabled,
         cross_channel_learning=c.cross_channel_learning,
         policy_id=c.policy_id,
+        default_owner_id=c.default_owner_id,
         created_at=c.created_at,
     )
 
@@ -34,6 +35,7 @@ def _model_to_channel(m: ChannelInstanceModel) -> ChannelInstance:
         ambient_enabled=m.ambient_enabled,
         cross_channel_learning=m.cross_channel_learning,
         policy_id=m.policy_id,
+        default_owner_id=m.default_owner_id,
         created_at=m.created_at,
     )
 

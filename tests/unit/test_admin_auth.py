@@ -44,7 +44,11 @@ def client(monkeypatch: pytest.MonkeyPatch, _with_token: None) -> Iterator[TestC
     for name in ("slack_bot_token", "slack_signing_secret", "feishu_app_id", "feishu_app_secret"):
         monkeypatch.setattr(settings, name, "", raising=False)
 
-    with TestClient(create_app()) as c:
+    # raise_server_exceptions=False：过了鉴权的用例会走到 handler 里去连 DB，
+    # 而本组有意不建表。默认设置下那个异常会被 TestClient 原样抛出，用例拿不到
+    # 状态码，「200/500 都算通过」的约定也就无从判定 —— 且失败信息指向 DB 而非
+    # 鉴权，与本组的关注点无关。
+    with TestClient(create_app(), raise_server_exceptions=False) as c:
         yield c
     container_module.reset_container()
 
