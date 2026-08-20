@@ -9,6 +9,7 @@ from __future__ import annotations
 from teamai.domain.repositories.audit import AuditRepository
 from teamai.domain.repositories.budget import BudgetRepository
 from teamai.domain.repositories.channel import ChannelRepository
+from teamai.domain.repositories.checkpoint import CheckpointRepository
 from teamai.domain.repositories.interaction import InteractionRepository
 from teamai.domain.repositories.mcp import McpServerRepository
 from teamai.domain.repositories.memory import MemoryRepository
@@ -22,6 +23,7 @@ __all__ = [
     "AuditRepository",
     "BudgetRepository",
     "ChannelRepository",
+    "CheckpointRepository",
     "InteractionRepository",
     "McpServerRepository",
     "MemoryRepository",

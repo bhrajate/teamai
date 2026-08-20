@@ -10,6 +10,7 @@ from __future__ import annotations
 from teamai.infrastructure.orm.audit import AuditLogModel
 from teamai.infrastructure.orm.budget import BudgetQuotaModel
 from teamai.infrastructure.orm.channel import ChannelInstanceModel
+from teamai.infrastructure.orm.checkpoint import TaskCheckpointModel
 from teamai.infrastructure.orm.interaction import AgentInteractionModel
 from teamai.infrastructure.orm.mcp import McpServerModel
 from teamai.infrastructure.orm.memory import MemoryEntryModel
@@ -32,5 +33,6 @@ __all__ = [
     "SkillFileModel",
     "SkillModel",
     "TagTemplateModel",
+    "TaskCheckpointModel",
     "TaskModel",
 ]

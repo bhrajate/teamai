@@ -26,6 +26,7 @@ EXPECTED_TABLES = {
     "permission_policies",
     "skill_files",
     "skills",
+    "task_checkpoints",
     "tag_templates",
     "tasks",
 }

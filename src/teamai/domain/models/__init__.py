@@ -14,6 +14,7 @@ from teamai.domain.models.budget import (
     BudgetState,
 )
 from teamai.domain.models.channel import ChannelInstance
+from teamai.domain.models.checkpoint import TaskCheckpoint
 from teamai.domain.models.interaction import AgentInteraction, InteractionResult
 from teamai.domain.models.mcp import McpServer
 from teamai.domain.models.memory import MemoryEntry, MemorySource, MemoryType, should_embed
@@ -48,6 +49,7 @@ __all__ = [
     "Skill",
     "SkillFile",
     "Task",
+    "TaskCheckpoint",
     "TaskStatus",
     "TagTemplate",
 ]
