@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from teamai.application.agent.context import ContextBundle
 from teamai.application.agent.prompts import build_system_prompt
 from teamai.application.agent.runtime import AgentRuntime, StageResult, StageStatus
+from teamai.application.approval import ApprovalService, resolve_approvers
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
 from teamai.application.conversation import ConversationService
@@ -27,7 +29,14 @@ from teamai.application.memory import MemoryService
 from teamai.application.orchestrator import TaskOrchestrator
 from teamai.application.skill import SkillService
 from teamai.application.tag import TagResolver
-from teamai.domain.models import ChannelInstance, Task, TaskStatus
+from teamai.domain.models import (
+    ApprovalOutcome,
+    ChannelInstance,
+    PendingApproval,
+    Task,
+    TaskStatus,
+)
+from teamai.domain.ports import ApprovalDecision
 from teamai.domain.repositories import PolicyRepository
 
 logger = logging.getLogger(__name__)
@@ -44,6 +53,44 @@ class RoutingDecision:
     message: str = ""
 
 
+def _parse_overrides(tokens: list[str]) -> dict[str, Any] | None:
+    """把 ``/approve title="新标题" base=main`` 里的 key=值 解析出来。
+
+    只认 ``key=value`` 形态，不含 ``=`` 的词忽略 —— 用户可能写
+    ``/approve 看着没问题``，那是注释不是参数。
+
+    值统一当字符串：这里没有工具的参数 schema，猜类型会把 ``count=2`` 变成 int
+    而 ``title=2`` 也变成 int。工具侧由 pydantic-ai 按 schema 做转换与校验，
+    在这里猜只会引入第二套（且更弱的）类型判断。
+    """
+    overrides: dict[str, Any] = {}
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if not sep or not key:
+            continue
+        overrides[key] = value.strip("\"'")
+    return overrides or None
+
+
+def _approval_prompt(pending: PendingApproval, approvers: set[str]) -> str:
+    """待批通知。
+
+    参数**逐项列全**：只说「我要建 PR」等于让人盲签，而审批支持改参数的前提是
+    人看得见参数。
+
+    定向 @ 审批人而非泛泛在线程里喊 —— 只有 @ 才有推送。
+    """
+    mentions = " ".join(f"@{uid}" for uid in sorted(approvers))
+    lines = [f"{mentions} 需要你确认：{pending.tool_name}"]
+    for key, value in pending.args.items():
+        lines.append(f"  {key}: {value}")
+    if pending.required > 1:
+        lines.append(f"\n本操作需要 {pending.required} 位审批人确认（当前 {pending.progress}）。")
+    lines.append("\n在本线程回复 /approve 放行，/deny <理由> 拒绝。")
+    lines.append("改参数后放行：/approve key=值")
+    return "\n".join(lines)
+
+
 class MessageRouter:
     def __init__(
         self,
@@ -58,6 +105,7 @@ class MessageRouter:
         conversation: ConversationService | None = None,
         distiller: MemoryDistiller | None = None,
         skills: SkillService | None = None,
+        approvals: ApprovalService | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._intent = intent
@@ -70,6 +118,8 @@ class MessageRouter:
         self._conversation = conversation
         self._distiller = distiller
         self._skills = skills
+        # 未装配时审批能力整体不出现（窄装配与测试场景）
+        self._approvals = approvals
 
     async def route(self, msg: IncomingMessage) -> RoutingDecision:
         instance = await self._channels.get_or_create(msg.platform, msg.channel_id, msg.workspace_id)
@@ -112,6 +162,13 @@ class MessageRouter:
         text = msg.text
         tag_name = None
         parts = text.split()
+
+        # 审批指令优先于标签解析与意图分类：这条线程若有待批项，/approve 与
+        # /deny 是对它的答复，不该被当成新任务。判据是「本线程有待批」而非
+        # 「命令名是 approve」—— 否则没有待批时打 /approve 会被当成找不到的标签。
+        if parts and parts[0] in ("/approve", "/deny"):
+            return await self._handle_approval(instance, msg, parts)
+
         if parts and parts[0].startswith("/"):
             candidate = parts[0][1:]
             tag = await self._tags.resolve(channel_instance_id, candidate)
@@ -164,14 +221,19 @@ class MessageRouter:
         instance: ChannelInstance,
         *,
         actor: str,
+        approval_results: dict[str, ApprovalDecision] | None = None,
     ) -> RoutingDecision:
         """执行 Agent 并按结果推进任务状态。
 
         调用方须已把任务置为 RUNNING。同步链路（MessageRouter）与异步链路
         （worker 消费队列）共用本方法，保证两条路径的状态推进与回复文案一致。
-        """
-        result = await self._run_agent(task, prompt, tag_name, instance)
 
+        ``approval_results`` 非空时是审批后恢复 —— 带着上次中断的裁决继续跑。
+        """
+        result = await self._run_agent(task, prompt, tag_name, instance, approval_results)
+
+        if result.status is StageStatus.AWAITING_APPROVAL:
+            return await self._await_approval(task, instance, result, actor=actor)
         if result.status is StageStatus.DONE:
             await self._orchestrator.transition(task, TaskStatus.DONE, actor)
             return await self._respond(instance, task.thread_ref, result.output)
@@ -180,6 +242,106 @@ class MessageRouter:
             return await self._respond(instance, task.thread_ref, result.error or "任务因预算暂停")
         await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
         return await self._respond(instance, task.thread_ref, f"任务执行失败：{result.error}")
+
+    async def _handle_approval(
+        self,
+        instance: ChannelInstance,
+        msg: IncomingMessage,
+        parts: list[str],
+    ) -> RoutingDecision:
+        """处理 /approve 与 /deny。
+
+        绑定键是 ``thread_ref`` 而非 task_id —— 用户不必抄一个 26 位 ULID。
+        代价是同一线程同时只能有一个待批项，这在实践中是对的（一个线程一个任务）。
+        """
+        if self._approvals is None:
+            return await self._respond(instance, msg.thread_ref, "本部署未启用审批能力。")
+
+        task = await self._orchestrator.find_awaiting_approval(instance.id, msg.thread_ref)
+        if task is None:
+            return await self._respond(
+                instance, msg.thread_ref, "这个线程当前没有等待审批的操作。"
+            )
+
+        policy = await self._policy_repo.get_for_channel(instance.id)
+        rest = parts[1:]
+
+        if parts[0] == "/deny":
+            outcome = await self._approvals.deny(
+                task, policy, user_id=msg.user_id, reason=" ".join(rest)
+            )
+        else:
+            outcome = await self._approvals.approve(
+                task, policy, user_id=msg.user_id, override_args=_parse_overrides(rest)
+            )
+
+        if not outcome.ready_to_resume:
+            # 校验没过（自批/无权/重复），或双批还差一个 —— 任务继续等着
+            return await self._respond(instance, msg.thread_ref, outcome.message)
+
+        assert outcome.pending is not None
+        approved = outcome.outcome is ApprovalOutcome.GRANTED
+        decisions = self._approvals.decisions_for_resume(
+            outcome.pending,
+            approved=approved,
+            reason=" ".join(rest) if not approved else "",
+        )
+        await self._approvals.clear(task.id)
+        # 转回 RUNNING 再恢复执行：execute_task 要求调用方已置 RUNNING
+        await self._orchestrator.transition(task, TaskStatus.RUNNING, msg.user_id)
+        return await self.execute_task(
+            task,
+            task.intent,
+            task.tag_name,
+            instance,
+            actor=msg.user_id,
+            approval_results=decisions,
+        )
+
+    async def _await_approval(
+        self,
+        task: Task,
+        instance: ChannelInstance,
+        result: StageResult,
+        *,
+        actor: str,
+    ) -> RoutingDecision:
+        """工具等人批准：落待批项、转 WAITING_INPUT、@ 审批人。
+
+        审批人配不出来时**不放宽**：直接判失败并说明原因。放行等于让审批配置
+        形同虚设 —— 与 allowed_tools 的语义一致（白名单里没有的不是「谁都能用」）。
+        """
+        if self._approvals is None:  # 未装配审批能力，理论上闸也挂不上
+            await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
+            return await self._respond(
+                instance, task.thread_ref, "需要人工批准的操作，但本部署未启用审批能力。"
+            )
+
+        policy = await self._policy_repo.get_for_channel(task.channel_instance_id)
+        approvers = resolve_approvers(task, policy)
+        request = result.pending_approvals[0]
+
+        if not approvers:
+            await self._orchestrator.transition(task, TaskStatus.FAILED, actor)
+            return await self._respond(
+                instance,
+                task.thread_ref,
+                f"{request.tool_name} 需要人工批准，但这个频道还没有配置审批人。"
+                "请让管理员在权限策略里配置审批人后重试。",
+            )
+
+        required = policy.approvals_needed(request.tool_name) if policy else 1
+        pending = await self._approvals.record_request(
+            task,
+            request,
+            required=max(required, 1),
+            history=result.approval_history or b"",
+            approvers=approvers,
+        )
+        await self._orchestrator.transition(task, TaskStatus.WAITING_INPUT, actor)
+        return await self._respond(
+            instance, task.thread_ref, _approval_prompt(pending, approvers)
+        )
 
     async def _respond(
         self,
@@ -208,6 +370,7 @@ class MessageRouter:
         prompt: str,
         tag_name: str | None,
         instance: ChannelInstance,
+        approval_results: dict[str, ApprovalDecision] | None = None,
     ) -> StageResult:
         policy = await self._policy_repo.get_for_channel(task.channel_instance_id)
         tag = await self._tags.resolve(task.channel_instance_id, tag_name) if tag_name else None
@@ -250,4 +413,4 @@ class MessageRouter:
             tag=tag,
             skills=skills,
         )
-        return await self._runtime.run(task, bundle)
+        return await self._runtime.run(task, bundle, approval_results)

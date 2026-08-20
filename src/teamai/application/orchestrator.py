@@ -118,6 +118,20 @@ class TaskOrchestrator:
     async def get(self, task_id: str) -> Task | None:
         return await self._repo.get(task_id)
 
+    async def find_awaiting_approval(
+        self, channel_instance_id: str, thread_ref: str
+    ) -> Task | None:
+        """找该线程上正在等审批的任务。
+
+        绑定键是 thread_ref 而非 task_id：审批指令来自聊天消息，不该要求用户
+        抄一个 26 位 ULID。同一线程同时只会有一个待批任务（一个线程一个任务），
+        故用 WAITING_INPUT 过滤即可 —— 多于一个的话取先建的那个，让审批按顺序
+        推进而非随查询顺序漂移。
+        """
+        tasks = await self._repo.list_by_channel(channel_instance_id, TaskStatus.WAITING_INPUT)
+        matched = [t for t in tasks if t.thread_ref == thread_ref]
+        return min(matched, key=lambda t: t.created_at) if matched else None
+
     async def list(self, channel_instance_id: str, status: TaskStatus | None = None) -> list[Task]:
         return await self._repo.list_by_channel(channel_instance_id, status)
 

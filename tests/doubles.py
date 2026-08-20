@@ -115,16 +115,21 @@ class FakeRuntime:
     def __init__(self, status: StageStatus = StageStatus.DONE, output: str = "执行完毕") -> None:
         self.runs = 0
         self.prompts: list[str] = []
+        self.approval_results: list[object | None] = []
         # 留整个 bundle 而非只留 prompt：线程历史与记忆命中是 router 组装进
         # bundle 的，断言它们接上了必须看得到对象本身。
         self.bundles: list[object] = []
         self._status = status
         self._output = output
 
-    async def run(self, task: Task, bundle: object) -> StageResult:
+    async def run(
+        self, task: Task, bundle: object, approval_results: object | None = None
+    ) -> StageResult:
         self.runs += 1
         self.bundles.append(bundle)
         self.prompts.append(getattr(bundle, "user_prompt", ""))
+        # 审批后恢复时带的裁决。记下来供「/approve 是否真的走到恢复」的断言用。
+        self.approval_results.append(approval_results)
         if self._status is StageStatus.DONE:
             return StageResult(status=self._status, output=self._output)
         return StageResult(status=self._status, error=self._output)
@@ -140,11 +145,15 @@ def mention(
     *,
     is_mention: bool = True,
     channel_type: str = "channel",
+    user: str = "U1",
 ) -> IncomingMessage:
     """构造入向消息。
 
     `channel_type` 可覆盖：私聊（slack `im`/`mpim`、feishu `p2p`）的内容不该
     进入频道记忆（PRD §4.2），router 靠这个字段判定。
+
+    `user` 可覆盖：工具审批要区分发起人与审批人（发起人不得批准自己），
+    默认值一样的话那条规则测不出来。
     """
     return IncomingMessage(
         platform="slack",
@@ -152,7 +161,7 @@ def mention(
         workspace_id="T1",
         channel_id="C1",
         channel_type=channel_type,
-        user_id="U1",
+        user_id=user,
         text=text,
         message_id="1700000000.1",
         thread_ref="1700000000.1",
