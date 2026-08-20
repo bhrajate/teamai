@@ -54,6 +54,7 @@ class ScriptedGateway(LLMGateway):
         token_limit: int | None = None,
         history: bytes | None = None,
         on_checkpoint: object | None = None,
+        approval_results: object | None = None,
     ) -> LLMResult:
         self.calls.append({"history": history, "token_limit": token_limit, "prompt": prompt})
         for i, seg in enumerate(self._cps, 1):
@@ -146,7 +147,12 @@ class SpyBudget:
 class NoTools:
     def register(self, tool: object) -> None: ...
 
-    def for_channel(self, allowed: list[str], skills: object = None) -> ToolBundle | None:
+    def for_channel(
+        self,
+        allowed: list[str],
+        skills: object = None,
+        approvals: object = None,
+    ) -> ToolBundle | None:
         return None
 
 

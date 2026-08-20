@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import pytest
 
@@ -63,6 +63,7 @@ class SpyGateway(LLMGateway):
         token_limit: int | None = None,
         history: bytes | None = None,
         on_checkpoint: object | None = None,
+        approval_results: object | None = None,
     ) -> LLMResult:
         self.calls.append(
             {
@@ -91,15 +92,20 @@ class SpyToolProvider:
         # 每次 for_channel 收到的 skill 名。运行时必须把 bundle.skills 透传下去，
         # 否则频道启用了技能而 load_skill 工具挂不上。
         self.asked_skills: list[list[str]] = []
+        self.asked_approvals: list[dict[str, int]] = []
         self._bundle = bundle
 
     def for_channel(
         self,
         allowed: list[str],
         skills: Sequence[Skill] | None = None,
+        approvals: Mapping[str, int] | None = None,
     ) -> ToolBundle | None:
         self.asked.append(list(allowed))
         self.asked_skills.append([s.name for s in skills or []])
+        # 需审批的工具配置。runtime 必须把它透传下去，否则闸挂不上、
+        # 危险工具照跑 —— 而那是静默失效。
+        self.asked_approvals.append(dict(approvals or {}))
         # 有 skill 时即便白名单为空也该有工具集（load_skill 不受白名单管制）
         return self._bundle if (allowed or skills) else None
 

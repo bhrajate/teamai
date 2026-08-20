@@ -20,7 +20,7 @@ runtime 上移后那个桩子随之删除。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from teamai.application.agent.context import ContextBundle
@@ -28,7 +28,14 @@ from teamai.application.budget import BudgetController
 from teamai.application.interaction import InteractionService
 from teamai.config import Settings
 from teamai.domain.models import AuditAction, AuditResult, InteractionResult, Task
-from teamai.domain.ports import LLMGateway, LLMResult, TokenBudgetExceeded, ToolProvider
+from teamai.domain.ports import (
+    ApprovalDecision,
+    ApprovalRequest,
+    LLMGateway,
+    LLMResult,
+    TokenBudgetExceeded,
+    ToolProvider,
+)
 from teamai.domain.repositories import CheckpointRepository
 from teamai.domain.services import AuditLogWriter
 
@@ -37,6 +44,10 @@ class StageStatus(Enum):
     DONE = "DONE"
     PAUSED = "PAUSED"
     FAILED = "FAILED"
+    # 工具需人工批准，run 中断。与 PAUSED 分开：那个是预算耗尽（要追加配额），
+    # 这个是等人点头（要有人来批）—— 两者的解法与催办文案都不同，混作一个会让
+    # 「为什么停住了」答不清楚。
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
 
 
 # StageStatus 到交互记录结果的映射。两个枚举分开而非共用：StageStatus 是
@@ -46,6 +57,9 @@ _INTERACTION_RESULT = {
     StageStatus.DONE: InteractionResult.DONE,
     StageStatus.PAUSED: InteractionResult.PAUSED,
     StageStatus.FAILED: InteractionResult.FAILED,
+    # 待批也记 PAUSED：交互记录的维度是「这次往返的结局」，而待批与预算暂停
+    # 在那个维度上是同一类（没跑完、可恢复）。要区分看 context_refs。
+    StageStatus.AWAITING_APPROVAL: InteractionResult.PAUSED,
 }
 
 
@@ -55,6 +69,11 @@ class StageResult:
     output: str = ""
     error: str | None = None
     usage_tokens: int = 0
+    # 待批的工具调用。仅 AWAITING_APPROVAL 时非空，供调用方发通知。
+    pending_approvals: list[ApprovalRequest] = field(default_factory=list)
+    # 恢复执行所需的消息历史。与 pending_approvals 同时非空 —— 调用方要把两者
+    # 一起交给 ApprovalService.record_request。
+    approval_history: bytes | None = None
 
 
 class AgentRuntime:
@@ -78,7 +97,17 @@ class AgentRuntime:
         # 行为与改造前一致：崩溃即失败，不续跑。
         self._checkpoints = checkpoints
 
-    async def run(self, task: Task, bundle: ContextBundle) -> StageResult:
+    async def run(
+        self,
+        task: Task,
+        bundle: ContextBundle,
+        approval_results: dict[str, ApprovalDecision] | None = None,
+    ) -> StageResult:
+        """执行一次 agent run。
+
+        ``approval_results`` 非空时是**审批后恢复**：带着上次中断的历史与裁决
+        继续跑，已完成的工具不重放。调用方（router 处理 /approve）负责组装它。
+        """
         if not await self._budget.check_quota(task.channel_instance_id):
             await self._audit_transition(task, bundle, "PAUSED", {"reason": "budget"}, AuditResult.PAUSED)
             result = StageResult(status=StageStatus.PAUSED, error="预算配额已耗尽")
@@ -89,17 +118,25 @@ class AgentRuntime:
 
         bundle = bundle.compact(self._settings.context_max_messages, self._settings.context_summary_threshold)
         try:
-            return await self._run_agent(task, bundle)
+            return await self._run_agent(task, bundle, approval_results)
         except Exception as exc:  # pragma: no cover - 顶层兜底
             await self._audit_transition(task, bundle, "FAILED", {"error": str(exc)}, AuditResult.FAILURE)
             result = StageResult(status=StageStatus.FAILED, error=str(exc))
             await self._record(task, bundle, result)
             return result
 
-    async def _run_agent(self, task: Task, bundle: ContextBundle) -> StageResult:
+    async def _run_agent(
+        self,
+        task: Task,
+        bundle: ContextBundle,
+        approval_results: dict[str, ApprovalDecision] | None = None,
+    ) -> StageResult:
         # skills 一并传下去：本频道启用了 skill 时，工具集里要多一个 load_skill。
         # 它不受 allowed_tools 管制（启用即授权，见 domain/ports/tools.py）。
-        tools = self._tools.for_channel(bundle.allowed_tools, bundle.skills)
+        # approvals 让需审批的工具在执行前中断（见 domain/ports/tools.py）。
+        # 取自策略 —— 没配策略即没有需审批的工具，行为与改造前一致。
+        approvals = bundle.policy.approval_required_tools if bundle.policy else None
+        tools = self._tools.for_channel(bundle.allowed_tools, bundle.skills, approvals)
         remaining = await self._budget.remaining(task.channel_instance_id)
         prompt = self._compose_prompt(bundle)
 
@@ -136,6 +173,7 @@ class AgentRuntime:
                 # 已是历史的第一条。
                 history=checkpoint.messages if checkpoint else None,
                 on_checkpoint=sink if self._checkpoints else None,
+                approval_results=approval_results,
             )
         except TokenBudgetExceeded as exc:
             await self._audit_transition(
@@ -153,6 +191,31 @@ class AgentRuntime:
             await self._budget.consume(task.channel_instance_id, tail)
 
         total = base + llm.tokens
+
+        # 工具等人批准：run 没跑完，output 是空的（gateway 已置空）。
+        # 这里只负责把待批项交出去 —— 落库、通知、状态迁移都在调用方
+        # （router）做，它才知道审批人是谁、往哪个线程发。
+        if llm.awaiting_approval:
+            await self._audit_transition(
+                task,
+                bundle,
+                "WAITING_INPUT",
+                {
+                    "reason": "tool_approval_required",
+                    "tools": [r.tool_name for r in llm.pending_approvals],
+                    "tokens": total,
+                },
+                AuditResult.PAUSED,
+                tokens=total,
+            )
+            result = StageResult(
+                status=StageStatus.AWAITING_APPROVAL,
+                usage_tokens=total,
+                pending_approvals=list(llm.pending_approvals),
+                approval_history=llm.history,
+            )
+            await self._record(task, bundle, result, llm=llm, resume_count=resume_count)
+            return result
         await self._audit_transition(task, bundle, "DONE", {"tokens": total}, tokens=total)
         result = StageResult(status=StageStatus.DONE, output=llm.output, usage_tokens=total)
         await self._record(task, bundle, result, llm=llm, resume_count=resume_count)

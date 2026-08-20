@@ -114,7 +114,7 @@ class NoTools:
 
     def register(self, tool: object) -> None: ...
 
-    def for_channel(self, allowed: list[str], skills: object = None):
+    def for_channel(self, allowed: list[str], skills: object = None, approvals: object = None):
         return FunctionToolset([Tool(ping)])
 
 
