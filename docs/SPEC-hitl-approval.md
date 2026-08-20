@@ -1,6 +1,6 @@
 # SPEC：工具审批（HITL）
 
-> 状态：设计中（待评审）
+> 状态：已实现
 > 日期：2026-08-20
 > 范围：`PermissionPolicy` 扩字段 + gateway 挂 `DeferredToolRequests` + 待批载荷存储 + router 审批分支 + 巡检超时兜底 + 管理控制台待批列表
 
