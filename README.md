@@ -15,7 +15,8 @@
 - **权限策略**：按频道白名单控制可用工具
 
 - **主动介入**：按频道规则在无人 @ 时开口，例如提醒沉寂的线程。两级开关（频道总闸 + 策略里的规则）都开才生效
-- **标签模板**：把角色、指令、输出风格存成可复用的配置，在频道里按名激活
+- **标签模板**：把角色、指令、输出风格存成可复用的配置，在频道里按名激活（`/名字`，由**人**触发）
+- **技能**：全局维护的「做事规范」，各频道勾选启用，由**模型**按描述自行判断相关性后载入。三级渐进式披露：系统提示词只常驻 `name: description`，正文经 `load_skill` 按需取，附带文件再经 `read_skill_file` 取 —— 故启用数量增长不会线性推高每次调用的 token。见 `docs/SPEC-skill-management.md`
 - **管理控制台**：`web/` 下的前端，管上面这些配置并看任务与审计
 
 未实现：端到端评测集（`docs/tasklist.md` 第 13 项）。标签的 `shared` 字段目前是空壳 —— 存得下、读得出，但没有任何跨频道共享语义。另有两项进行中的改造见 `tasklist.md` 21.1 / 21.2：除记忆之外的七个仓储还在各自提交事务，且 web 进程仍共用单个数据库会话（`container.py` 里注明了这是 MVP 待改）。
@@ -145,6 +146,10 @@ worker 里两个定时任务都不可缺：预算周期重置（否则耗尽配�
 | `GET /api/channels/{id}/audit` | 审计查询（动作流水） |
 | `GET /api/channels/{id}/interactions`、`GET /api/tasks/{task_id}/interactions`、`GET /api/interactions/{id}` | 交互记录：模型看到的提示词与响应全文。只读 —— 由运行时产生，人工写入会污染成本统计；删除走保留期巡检 |
 | `GET/POST /api/channels/{id}/tags`、`PATCH/DELETE /api/channels/{id}/tags/{tag_id}` | 标签：列举、创建、启停、删除 |
+| `GET/POST /api/skills`、`PUT/DELETE /api/skills/{id}` | 技能库（全局资源，不带频道前缀） |
+| `GET/POST /api/skills/{id}/files`、`PUT/DELETE /api/skills/{id}/files/{fid}` | 技能的附带文件（文本、只读、单个 ≤64 KB） |
+| `GET/PUT /api/channels/{id}/skills` | 该频道启用哪些技能（覆盖式设置） |
+| `GET /api/audit/global` | 全局资源（技能库）的变更流水 |
 
 未配预算或策略的频道，对应的 `GET` 返回 404 —— 那表示「还没配」，不是故障。
 
@@ -184,7 +189,9 @@ make web-check      # 类型检查 + 各页面渲染冒烟
 | 预算 | 看用量、改上限与周期 |
 | 权限策略 | 工具白名单（选项来自 `GET /api/tools`）、主动介入规则 |
 | 标签 | 标签模板的增删与启停 |
-| 审计 | 审计流水，可按动作与结果筛选，详情看 `detail` |
+| 技能（频道） | 勾选这个频道启用哪些技能。勾中即授权，无需在权限策略里另配；但技能正文里提到的**工具**仍受策略管制 |
+| 技能库（全局） | 侧栏与「全部频道」同级 —— 技能定义一份、各频道启用，不隶属任何频道。管正文与附带文件。改动即时生效，无需重启 worker |
+| 审计 | 审计流水，可按动作与结果筛选，详情看 `detail`。两档作用域：本频道，与「全局变更」（技能库的增删改，`?scope=global`）|
 | 设置 | 填 Admin API 令牌 |
 
 令牌存浏览器的 localStorage，不打进构建产物 —— 产物是静态文件，任何访客都能下载。这也意味着同机器的其他人能从 devtools 里读到它，对内网管理后台是可接受的折中。
@@ -268,4 +275,6 @@ docker run -v ./config:/app/config:ro --env-file .env -p 8000:8000 teamai:latest
 | `docs/Design-claude-tag.md` | 总体设计 |
 | `docs/Design-multi-platform.md` | 多平台接入设计 |
 | `docs/Code-Design-Python.md` | 代码结构与分层约定 |
+| `docs/SPEC-skill-management.md` | 技能管理：三级渐进式披露、per-run 工具的会话约束 |
+| `docs/SPEC-mcp-management.md` | MCP server 管理 |
 | `docs/tasklist.md` | 实施进度 |
