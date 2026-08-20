@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from teamai.domain.models.audit import AuditAction, AuditLog, AuditResult
+from teamai.domain.models.audit import GLOBAL_SCOPE, AuditAction, AuditLog, AuditResult
 from teamai.domain.models.budget import (
     BudgetPeriod,
     BudgetQuota,
@@ -19,6 +19,7 @@ from teamai.domain.models.mcp import McpServer
 from teamai.domain.models.memory import MemoryEntry, MemorySource, MemoryType, should_embed
 from teamai.domain.models.outbox import OutboxEntry, OutboxOp
 from teamai.domain.models.policy import AmbientRule, PermissionPolicy
+from teamai.domain.models.skill import Skill, SkillFile
 from teamai.domain.models.tag import TagTemplate
 from teamai.domain.models.task import InvalidTransition, Task, TaskStatus
 
@@ -33,6 +34,7 @@ __all__ = [
     "BudgetScope",
     "BudgetState",
     "ChannelInstance",
+    "GLOBAL_SCOPE",
     "InteractionResult",
     "InvalidTransition",
     "McpServer",
@@ -43,6 +45,8 @@ __all__ = [
     "OutboxOp",
     "should_embed",
     "PermissionPolicy",
+    "Skill",
+    "SkillFile",
     "Task",
     "TaskStatus",
     "TagTemplate",

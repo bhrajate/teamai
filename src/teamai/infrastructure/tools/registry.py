@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,8 +18,10 @@ from pydantic_ai import Tool
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import FunctionToolset, ToolsetTool, WrapperToolset
 
+from teamai.domain.models.skill import Skill
 from teamai.domain.ports import ToolBundle, ToolProvider
 from teamai.infrastructure.tools.base import ToolUnavailable, fail
+from teamai.infrastructure.tools.skill_tool import build_skill_file_tool, build_skill_tool
 
 
 @dataclass
@@ -83,15 +86,32 @@ class ToolRegistry(ToolProvider):
                 expanded.append(name)
         return expanded
 
-    def for_channel(self, allowed: list[str]) -> ToolBundle | None:
-        """按白名单裁出工具集。返回值对上层不透明，只有 gateway 会解释它。
+    def for_channel(
+        self,
+        allowed: list[str],
+        skills: Sequence[Skill] | None = None,
+    ) -> ToolBundle | None:
+        """按白名单裁出工具集，必要时补上 ``load_skill``。
 
-        未注册的名字直接忽略（策略里可能残留已下线的工具名）。白名单为空或
-        全部未命中时返回 ``None``，表示本次调用不挂任何工具。
+        返回值对上层不透明，只有 gateway 会解释它。未注册的名字直接忽略
+        （策略里可能残留已下线的工具名）。
+
+        ``load_skill`` 不参与白名单裁剪，而是在 ``skills`` 非空时无条件挂上 ——
+        频道启用 skill 本身即授权，理由见 ``ToolProvider.for_channel`` 的文档。
+        它也不进 ``self._tools``：那份是全局注册表，而这个工具闭包捕获了本次
+        run 的 skill 集合，存进去会让下一个频道拿到上一个频道的技能。
+
+        白名单空、且本频道无启用的 skill 时返回 ``None``（不挂任何工具）。
         """
         selected = [
             tool for name in self._expand_allowed(allowed) if (tool := self._tools.get(name)) is not None
         ]
+        if skills:
+            selected.append(build_skill_tool(skills))
+            # read_skill_file 只在真有文件时才挂：一个永远返回「没有这个文件」的
+            # 工具会占着模型的注意力，且诱导它去猜路径。
+            if any(s.files for s in skills):
+                selected.append(build_skill_file_tool(skills))
         if not selected:
             return None
         return _GracefulToolset(FunctionToolset(selected))

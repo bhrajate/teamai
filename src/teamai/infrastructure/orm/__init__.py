@@ -15,6 +15,7 @@ from teamai.infrastructure.orm.mcp import McpServerModel
 from teamai.infrastructure.orm.memory import MemoryEntryModel
 from teamai.infrastructure.orm.outbox import MemoryOutboxModel
 from teamai.infrastructure.orm.policy import PolicyModel
+from teamai.infrastructure.orm.skill import ChannelSkillModel, SkillFileModel, SkillModel
 from teamai.infrastructure.orm.tag import TagTemplateModel
 from teamai.infrastructure.orm.task import TaskModel
 
@@ -23,10 +24,13 @@ __all__ = [
     "AuditLogModel",
     "BudgetQuotaModel",
     "ChannelInstanceModel",
+    "ChannelSkillModel",
     "McpServerModel",
     "MemoryEntryModel",
     "MemoryOutboxModel",
     "PolicyModel",
+    "SkillFileModel",
+    "SkillModel",
     "TagTemplateModel",
     "TaskModel",
 ]

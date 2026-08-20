@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any, TypeAlias
+
+from teamai.domain.models.skill import Skill
 
 ToolBundle: TypeAlias = object
 """一份已按频道权限裁剪好的工具集。对领域层不透明，不可解构。"""
@@ -32,12 +35,30 @@ class ToolProvider(ABC):
         ...
 
     @abstractmethod
-    def for_channel(self, allowed: list[str]) -> ToolBundle | None:
+    def for_channel(
+        self,
+        allowed: list[str],
+        skills: Sequence[Skill] | None = None,
+    ) -> ToolBundle | None:
         """裁出本次调用可见的工具集。
 
         未授权的工具不应出现在返回的工具集中 —— 模型无法调用它看不见的工具，
         因此鉴权只发生在这一步，不需要在工具执行时二次检查。
 
-        无任何可用工具时返回 ``None``，表示本次调用不挂工具。
+        ``skills`` 非空时额外挂 ``load_skill``（按名取回正文 + 文件清单）；其中
+        若有 skill 带附带文件，再挂 ``read_skill_file``（按路径取回文件内容）。
+        这是三级渐进式披露，见 :mod:`teamai.domain.models.skill`。两点有意如此：
+
+        **不受 allowed 白名单管制。** 频道启用某个 skill 这个动作本身就是授权，
+        再要求管理员去策略页补一条 ``load_skill`` 才生效，等于同一件事配两处，
+        漏配的表现是「skill 明明启用了，模型却说没有这个能力」。
+
+        **传的是完整 Skill（含 content），不是 id 列表。** 于是取正文是纯内存
+        查表，工具内不碰数据库。若让工具自己查库，它会在 agent run 进行中复用
+        组合根那个共享 ``AsyncSession`` —— 而 AsyncSession 不允许并发使用，
+        这正是 ``container.open_job_scope`` 文档里记的那类「another operation
+        is in progress」故障，且同样会被 run 的顶层兜底吞成一句错误文本。
+
+        无任何可用工具且无 skill 时返回 ``None``，表示本次调用不挂工具。
         """
         ...

@@ -14,6 +14,7 @@ from teamai.domain.repositories.mcp import McpServerRepository
 from teamai.domain.repositories.memory import MemoryRepository
 from teamai.domain.repositories.outbox import OutboxRepository, OutboxStats
 from teamai.domain.repositories.policy import PolicyRepository
+from teamai.domain.repositories.skill import SkillRepository
 from teamai.domain.repositories.tag import TagRepository
 from teamai.domain.repositories.task import TaskRepository
 
@@ -27,6 +28,7 @@ __all__ = [
     "OutboxRepository",
     "OutboxStats",
     "PolicyRepository",
+    "SkillRepository",
     "TagRepository",
     "TaskRepository",
 ]
