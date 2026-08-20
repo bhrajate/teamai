@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # 出队的阻塞等待上限。队列空时 BLPOP 挂住直到有任务或超时，故这不是轮询
 # 间隔，而是「最坏情况下多久醒来一次去查停止信号」：调大只影响收到 SIGTERM
 # 后的退出延迟，不影响取任务的及时性 —— 一有任务即刻返回。
+# 审批超时处置的 actor。取固定串而非某个真实用户：审计里要能一眼区分
+# 「人拒绝的」与「等太久系统判拒的」。
+_APPROVAL_ACTOR = "system:approval-timeout"
+
 DEQUEUE_BLOCK_SECONDS = 5.0
 
 # 队列不可用时的重试间隔。这条路径上 dequeue 立即抛错、不会阻塞，
@@ -173,6 +177,56 @@ async def sweep_stale_tasks(container: Container) -> None:
         logger.error(f"超时巡检失败: {exc}")
 
 
+async def sweep_stale_approvals(container: Container) -> None:
+    """审批超时巡检：等太久的待批按拒绝处理，让模型收尾说明。
+
+    与 sweep_stale_tasks 分开：那个扫的是 PENDING/RUNNING（worker 挂了），
+    这个扫 WAITING_INPUT（人没回）。阈值差一个数量级、处置也不同。
+
+    转拒绝而非取消任务：模型能说明「因为没等到审批，PR 没有创建」，用户看到的
+    是解释而非任务凭空消失。
+    """
+    try:
+        timeout = timedelta(minutes=settings.jobs_approval_timeout_minutes)
+        async with open_job_scope(container) as scope:
+            stale = await scope.orchestrator.sweep_stale_approvals(timeout)
+            for task in stale:
+                instance = await container.channels.get(task.channel_instance_id)
+                if instance is None:
+                    logger.warning(f"审批超时任务的频道不存在，跳过: {task.id}")
+                    continue
+                outcome = await scope.approvals.timeout(task)
+                if outcome.pending is None:
+                    continue
+                decisions = scope.approvals.decisions_for_resume(
+                    outcome.pending, approved=False, reason="审批超时，未获批准"
+                )
+                await scope.approvals.clear(task.id)
+                await scope.orchestrator.transition(task, TaskStatus.RUNNING, actor=_APPROVAL_ACTOR)
+                # 经 router 恢复：状态推进与回帖文案与人工审批那条路一致
+                decision = await container.router.execute_task(
+                    task,
+                    task.intent,
+                    task.tag_name,
+                    instance,
+                    actor=_APPROVAL_ACTOR,
+                    approval_results=decisions,
+                )
+                if decision.message:
+                    await container.publisher.reply(
+                        ReplyTarget(
+                            platform=instance.platform,
+                            channel_id=instance.channel_id,
+                            thread_ref=task.thread_ref,
+                        ),
+                        decision.message,
+                    )
+        if stale:
+            logger.warning(f"审批超时: {len(stale)} 个任务按拒绝处理: {[t.id for t in stale]}")
+    except Exception as exc:
+        logger.error(f"审批超时巡检失败: {exc}")
+
+
 async def distill_memories(container: Container) -> None:
     """记忆蒸馏：把到期的对话窗口提炼成记忆。独立 session 与异常兜底的理由同上。
 
@@ -262,6 +316,11 @@ def register_jobs(container: Container) -> None:
         coro=functools.partial(sweep_stale_tasks, container),
     )
     scheduler.add_interval(
+        "approval-timeout-sweep",
+        minutes=interval,
+        coro=functools.partial(sweep_stale_approvals, container),
+    )
+    scheduler.add_interval(
         "memory-distill",
         minutes=interval,
         coro=functools.partial(distill_memories, container),
@@ -278,7 +337,7 @@ def register_jobs(container: Container) -> None:
         coro=functools.partial(purge_expired_interactions, container),
     )
     logger.info(
-        f"已注册定时任务: 预算周期重置 / 超时巡检 / 记忆蒸馏 / 向量对账，每 {interval} 分钟；"
+        f"已注册定时任务: 预算周期重置 / 超时巡检 / 审批超时 / 记忆蒸馏 / 向量对账，每 {interval} 分钟；"
         f"交互记录清理，每 {purge_interval} 分钟"
     )
 

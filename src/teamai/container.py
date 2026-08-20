@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from teamai.application.agent.runtime import AgentRuntime
+from teamai.application.approval import ApprovalService
 from teamai.application.budget import BudgetController
 from teamai.application.channel import ChannelService
 from teamai.application.conversation import ConversationService
@@ -132,6 +133,7 @@ class Container:
     tags: TagResolver
     channels: ChannelService
     mcp: McpService
+    approvals: ApprovalService
     skills: SkillService
     runtime: AgentRuntime
     router: MessageRouter
@@ -278,6 +280,8 @@ def build_container() -> Container:
     # skill 不需要启动装载：正文每次 agent run 从库里读，改完即生效。
     # 与 mcp 相反 —— 那边要在启动时建长连接，故有 load_and_register 这一步。
     skills = SkillService(skill_repo, audit, uow)
+    # 审批：判定谁能批、够不够数。与 checkpoint 仓储共用一张表。
+    approvals = ApprovalService(checkpoint_repo, audit)
 
     tools = build_tools()
     # MCP server 的装载是启动后的异步步骤（worker 引导处调用 load_and_register），
@@ -299,6 +303,7 @@ def build_container() -> Container:
         conversation=conversation,
         distiller=distiller,
         skills=skills,
+        approvals=approvals,
     )
 
     return Container(
@@ -334,6 +339,7 @@ def build_container() -> Container:
         channels=channels,
         mcp=mcp,
         skills=skills,
+        approvals=approvals,
         runtime=runtime,
         router=router,
         tools=tools,
@@ -349,6 +355,8 @@ class JobScope:
     distiller: MemoryDistiller
     interactions: InteractionService
     reconciler: MemoryReconciler
+    # 审批超时处置要用它（判超时 + 组装拒绝裁决）
+    approvals: ApprovalService
     # 投影器要的两个仓储。它不走服务层 —— 投影是「把权威状态同步到派生索引」，
     # 没有业务规则可言，多一层只是多一层转发。
     #
@@ -420,6 +428,7 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
             ),
             outbox_repo=SQLOutboxRepository(session, dialect=_dialect()),
             memory_repo=SQLMemoryRepository(session),
+            approvals=ApprovalService(SQLCheckpointRepository(session), audit),
             reconciler=MemoryReconciler(
                 SQLMemoryRepository(session),
                 SQLOutboxRepository(session, dialect=_dialect()),

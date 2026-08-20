@@ -140,6 +140,32 @@ class TaskOrchestrator:
             raise ValueError(f"任务已处于终态 {task.status.value}，无法取消")
         return await self.transition(task, TaskStatus.CANCELLED, actor)
 
+    async def sweep_stale_approvals(
+        self, timeout: timedelta, now: datetime | None = None
+    ) -> list[Task]:
+        """找出等审批太久的任务。
+
+        只**返回**它们，不在这里推进 —— 超时的处置是「拿 ToolDenied 恢复 run，
+        让模型说明『因为没等到审批，这件事没做』」，那要经 ApprovalService 与
+        gateway，属用例编排。orchestrator 只管任务状态，不认识审批语义。
+
+        与 sweep_stale_tasks 分开而非加一条分流：那个扫的是 PENDING/RUNNING
+        （worker 挂了），这个扫 WAITING_INPUT（人没回）。两者的超时阈值差一个
+        数量级（小时 vs 天），处置也完全不同。
+        """
+        if self._checkpoints is None:
+            return []
+        cutoff = (now or _utcnow()) - timeout
+        task_ids = await self._checkpoints.list_pending_before(cutoff)
+        out: list[Task] = []
+        for task_id in task_ids:
+            task = await self._repo.get(task_id)
+            # 状态必须仍是 WAITING_INPUT：待批项可能已被处理但清理尚未落库，
+            # 或任务已被取消 —— 那时不该再走超时处置。
+            if task is not None and task.status is TaskStatus.WAITING_INPUT:
+                out.append(task)
+        return out
+
     async def _try_resume(self, task: Task, max_attempts: int) -> bool:
         """有检查点且未超上限时重新入队续跑。返回是否已接手。
 

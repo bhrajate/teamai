@@ -200,6 +200,12 @@ class Settings(BaseSettings):
     #
     # 设为 0 即关闭续跑，行为退回改造前（崩溃一律收敛 FAILED）。
     jobs_max_resume_attempts: int = 3
+    # 工具审批的等待上限。超过即按拒绝处理 —— 模型会说明「因为没等到审批，
+    # 这件事没做」，用户看到的是解释而非任务凭空消失。
+    #
+    # 默认一天：审批是人的动作，比 token 预算慢得多。比 RUNNING 超时（24h）
+    # 同量级但语义不同 —— 那个是「worker 是不是挂了」，这个是「人是不是忘了」。
+    jobs_approval_timeout_minutes: int = 1440
 
     # admin_api.*
     admin_api_host: str = "0.0.0.0"
