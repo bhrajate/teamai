@@ -371,6 +371,12 @@ class JobScope:
 async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
     """为一次定时任务运行开一个独立 session，用完即关。
 
+    ⚠️ **成功路径必须在这里 commit，不能只靠 close()。** `Session.close()` 会
+    回滚未提交事务 —— 投影器每轮只 flush 不提交（outbox 删行、embedded_hash
+    回填都靠本 scope 收口），曾因缺这行 commit 导致记录永远删不掉、每轮重投
+    （症状：日志里「投影 1 条」每 2 秒一次，embedding/Qdrant 接口被无限调用）。
+    修复见 verify_outbox_flow.py 里 `_scope()` 的同款写法。
+
     这里每次都调一次工厂，故每次运行拿到的是新 session —— 与 build_container()
     不同：那边虽然也取的是工厂（get_session_factory 返回 async_sessionmaker），
     但只调用了一次，把同一个实例交给全部仓储。所以 container.budget 与
@@ -435,6 +441,9 @@ async def open_job_scope(container: Container) -> AsyncIterator[JobScope]:
                 metrics=PrometheusMetricsSink(),
             ),
         )
+        # 成功路径在此提交，见本函数 docstring 的 ⚠️。块体抛异常时不执行到这里，
+        # 直接进 finally 的 close() —— close 会回滚，异常侧语义不变。
+        await session.commit()
     finally:
         await session.close()
 
