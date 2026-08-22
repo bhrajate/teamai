@@ -1,9 +1,10 @@
 """orm 包表注册完整性校验。
 
 orm.py 拆成 orm/ 后多了一个隐式依赖：SQLAlchemy 只在类定义被执行时才把表
-注册进 Base.metadata，而 init_db() 依赖 Base.metadata.create_all 建表。
-若新增表模块却忘了在 orm/__init__.py 里 import，该表会静默地不被创建 ——
-不报错、不告警，只在运行时缺表。这里把这个约束固化成断言。
+注册进 Base.metadata，而 alembic 的 env.py 以 Base.metadata 为 target_metadata
+（建库统一走 alembic，见 db.py 的 init_db）。若新增表模块却忘了在
+orm/__init__.py 里 import，该表会静默地不被迁移 —— 不报错、不告警，只在运行时缺表。
+这里把这个约束固化成断言。
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ def test_init_导入了全部表模块() -> None:
     missing = set(_table_modules()) - _modules_imported_by_init()
     assert not missing, (
         "orm/__init__.py 漏了这些表模块，其表不会注册到 Base.metadata、"
-        "init_db() 也就不会建表:\n  " + "\n  ".join(sorted(missing))
+        "env.py 也就不会迁移出这些表:\n  " + "\n  ".join(sorted(missing))
     )
 
 

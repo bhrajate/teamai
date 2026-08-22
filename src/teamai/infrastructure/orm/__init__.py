@@ -1,8 +1,9 @@
 """ORM 表模型（对应领域模型映射），按聚合分模块。
 
 ⚠️ 本文件必须导入全部表模块。SQLAlchemy 只在类定义被执行时才把表注册到
-`Base.metadata`，而 `init_db()` 依赖 `Base.metadata.create_all` 建表。
-漏掉任何一个 import，对应的表就会静默地不被创建。新增表模块时记得补这里。
+`Base.metadata`，而 alembic 的 env.py 以 `Base.metadata` 为 target_metadata
+（建库统一走 alembic，见 db.py 的 init_db）。
+漏掉任何一个 import，autogenerate / upgrade 就会静默漏掉对应表。新增表模块时记得补这里。
 """
 
 from __future__ import annotations
